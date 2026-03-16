@@ -13,8 +13,8 @@
 #   8. Prompt user for issues to fix
 #   9. Save approved issues and exit
 #
-# Usage: ./test.sh
-# Prerequisites: Edit config.sh first with your project settings.
+# Usage: ./test.sh       (auto-detects everything from your Android project)
+#        ./test.sh -y    (skip confirmation prompt)
 # ============================================================
 
 set -euo pipefail
@@ -29,16 +29,44 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-# ---- Issue tracking ----
-ISSUE_COUNT=0
-ISSUES_TMP="${REPORTS_DIR}/.issues_tmp"
-
 # ---- Helpers ----
 log_info()  { echo -e "${CYAN}[INFO]${NC} $*"; }
 log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 log_step()  { echo -e "\n${BOLD}=== $* ===${NC}"; }
+
+# ============================================================
+# Step 0: Show detected config and confirm
+# ============================================================
+echo ""
+echo -e "${BOLD}=== Android D-pad Testing Toolkit ===${NC}"
+echo ""
+echo -e "  Package:    ${CYAN}${PACKAGE_NAME:-NOT DETECTED}${NC}"
+echo -e "  Activity:   ${CYAN}${MAIN_ACTIVITY:-NOT DETECTED}${NC}"
+echo -e "  APK Path:   ${CYAN}${APK_PATH:-NOT DETECTED}${NC}"
+echo -e "  Device:     ${CYAN}${DEVICE_ID:-auto (first connected)}${NC}"
+echo -e "  Project:    ${CYAN}${PROJECT_DIR:-.}${NC}"
+echo -e "  Screens:    ${CYAN}${SCREENS[*]:-none}${NC}"
+echo ""
+
+# Bail if critical values are missing
+if [ -z "$PACKAGE_NAME" ]; then
+    log_error "Could not detect PACKAGE_NAME."
+    log_error "Make sure you're running from an Android project root,"
+    log_error "or set PACKAGE_NAME in config.sh manually."
+    exit 1
+fi
+
+# Skip confirmation with -y flag
+if [ "${1:-}" != "-y" ]; then
+    echo -e "${BOLD}Press Enter to start testing, or Ctrl+C to edit config.sh${NC}"
+    read -r
+fi
+
+# ---- Issue tracking ----
+ISSUE_COUNT=0
+ISSUES_TMP="${REPORTS_DIR}/.issues_tmp"
 
 add_issue() {
     local type="$1"
