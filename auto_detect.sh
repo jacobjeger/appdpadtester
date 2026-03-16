@@ -90,19 +90,12 @@ auto_detect_package_name() {
         "$project_dir/app/build.gradle.kts" \
         "$project_dir/app/build.gradle"; do
         if [ -f "$gradle_file" ]; then
-            # Try applicationId first
-            pkg=$(sed -n 's/.*applicationId[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$gradle_file" | head -1)
-            if [ -z "$pkg" ]; then
-                # Groovy style: applicationId "com.example"
-                pkg=$(sed -n 's/.*applicationId[[:space:]]*"\([^"]*\)".*/\1/p' "$gradle_file" | head -1)
-            fi
+            # Extract any quoted string after applicationId (handles = and space variants)
+            pkg=$(sed -n 's/.*applicationId[^"]*"\([^"]*\)".*/\1/p' "$gradle_file" | head -1)
             [ -n "$pkg" ] && echo "$pkg" && return
 
-            # Try namespace
-            pkg=$(sed -n 's/.*namespace[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$gradle_file" | head -1)
-            if [ -z "$pkg" ]; then
-                pkg=$(sed -n 's/.*namespace[[:space:]]*"\([^"]*\)".*/\1/p' "$gradle_file" | head -1)
-            fi
+            # Extract any quoted string after namespace
+            pkg=$(sed -n 's/.*namespace[^"]*"\([^"]*\)".*/\1/p' "$gradle_file" | head -1)
             [ -n "$pkg" ] && echo "$pkg" && return
         fi
     done
@@ -131,33 +124,22 @@ auto_detect_main_activity() {
         return
     fi
 
-    # Find the <activity> that contains android.intent.action.MAIN
+    # Find the <activity> block that contains android.intent.action.MAIN
+    # Uses sed (POSIX-compatible, works on macOS and Linux)
     local activity
-    activity=$(awk '
-        /<activity/{
-            name = ""
-            # Try to get name from this line
-            if (match($0, /android:name="([^"]+)"/, arr)) {
-                name = arr[1]
-            }
-            current_activity = name
-            in_activity = 1
-        }
-        # Handle android:name on a separate line from <activity
-        in_activity && /android:name=/ && current_activity == "" {
-            if (match($0, /android:name="([^"]+)"/, arr)) {
-                current_activity = arr[1]
-            }
-        }
-        /android\.intent\.action\.MAIN/ && in_activity {
-            print current_activity
-            exit
-        }
-        /<\/activity>/ {
-            in_activity = 0
-            current_activity = ""
-        }
-    ' "$manifest" 2>/dev/null)
+
+    # Collapse the manifest to make activity blocks easier to parse,
+    # then find the one with MAIN action
+    activity=$(
+        # Step 1: Get all lines between <activity and </activity> that contain MAIN
+        sed -n '/<activity/,/<\/activity>/p' "$manifest" 2>/dev/null | \
+        # Step 2: Join lines so each activity block is on one line
+        tr '\n' ' ' | sed 's/<\/activity>/\n/g' | \
+        # Step 3: Find the block with android.intent.action.MAIN
+        grep 'android.intent.action.MAIN' | head -1 | \
+        # Step 4: Extract android:name value
+        sed -n 's/.*android:name="\([^"]*\)".*/\1/p'
+    )
 
     if [ -n "$activity" ]; then
         echo "$activity"
