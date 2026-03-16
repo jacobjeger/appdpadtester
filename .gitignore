@@ -1,0 +1,19 @@
+# Reports (generated at runtime)
+reports/
+
+# Gradle
+.gradle/
+build/
+uitests/build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kotlin
+*.class
