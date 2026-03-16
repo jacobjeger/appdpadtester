@@ -132,7 +132,7 @@ fi
 # Check gradlew exists in the target project
 if [ ! -f "${PROJECT_DIR}/gradlew" ]; then
     log_error "gradlew not found at ${PROJECT_DIR}/gradlew"
-    log_error "Make sure PROJECT_DIR in config.sh points to your Android project root."
+    log_error "Run this from your Android project root, or set PROJECT_DIR in config.sh."
     exit 1
 fi
 log_ok "gradlew found"
@@ -271,7 +271,9 @@ if adb_cmd shell pm list packages | grep -q "$TEST_PACKAGE"; then
     while IFS= read -r line; do
         if echo "$line" | grep -q "FAILURES\|Error in\|junit.framework.AssertionFailedError\|INSTRUMENTATION_RESULT"; then
             # Extract test name and failure details
-            TEST_NAME=$(echo "$line" | grep -oP '(?<=test=)\w+|(?<=Error in )\w+' || echo "unknown")
+            TEST_NAME=$(echo "$line" | sed -n 's/.*test=\([A-Za-z0-9_]*\).*/\1/p' | head -1)
+            [ -z "$TEST_NAME" ] && TEST_NAME=$(echo "$line" | sed -n 's/.*Error in \([A-Za-z0-9_]*\).*/\1/p' | head -1)
+            [ -z "$TEST_NAME" ] && TEST_NAME="unknown"
 
             # Determine issue type from test name
             case "$TEST_NAME" in
@@ -293,10 +295,12 @@ if adb_cmd shell pm list packages | grep -q "$TEST_PACKAGE"; then
 
     # Check for overall test result
     if grep -q "OK (" "$TEST_OUTPUT"; then
-        PASS_COUNT=$(grep -oP '\d+(?= test)' "$TEST_OUTPUT" || echo "?")
+        PASS_COUNT=$(sed -n 's/.*\([0-9][0-9]*\) test.*/\1/p' "$TEST_OUTPUT" | head -1)
+        [ -z "$PASS_COUNT" ] && PASS_COUNT="?"
         log_ok "All $PASS_COUNT tests passed"
     elif grep -q "FAILURES" "$TEST_OUTPUT"; then
-        FAIL_COUNT=$(grep -oP '\d+(?= failure)' "$TEST_OUTPUT" || echo "?")
+        FAIL_COUNT=$(sed -n 's/.*\([0-9][0-9]*\) failure.*/\1/p' "$TEST_OUTPUT" | head -1)
+        [ -z "$FAIL_COUNT" ] && FAIL_COUNT="?"
         log_warn "$FAIL_COUNT test failure(s) detected"
     fi
 else
