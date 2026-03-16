@@ -270,7 +270,7 @@ if adb_cmd shell pm list packages | grep -q "$TEST_PACKAGE"; then
     # Run each test class separately. Within each class, parse the
     # am instrument output line-by-line for real-time progress.
     # adb shell output has \r (carriage returns) — strip with tr.
-    _test_classes="${TEST_PACKAGE}.DpadNavTest ${TEST_PACKAGE}.FocusTest ${TEST_PACKAGE}.UiAuditTest"
+    _test_classes="${TEST_PACKAGE}.DpadNavTest ${TEST_PACKAGE}.FocusTest ${TEST_PACKAGE}.UiAuditTest ${TEST_PACKAGE}.DpadAnalysisTest"
 
     for _test_class in $_test_classes; do
         _short_class="${_test_class##*.}"
