@@ -262,72 +262,59 @@ TEST_OUTPUT="${REPORTS_DIR}/.test_output.txt"
 if adb_cmd shell pm list packages | grep -q "$TEST_PACKAGE"; then
     log_info "Running D-pad navigation and focus tests..."
 
-    # Run instrumentation and parse output in real-time for progress display.
-    # am instrument emits INSTRUMENTATION_STATUS lines we can parse:
-    #   numtests=N, current=N, class=..., test=..., INSTRUMENTATION_STATUS_CODE: 1 (start) / 0 (pass) / -1/-2 (fail)
-    _cur_test=""
-    _cur_class=""
-    _cur_num=""
-    _total_tests=""
-    _pass_count=0
-    _fail_count=0
-    _failed_tests=""
+    # Run tests to file, with a background watcher that prints progress in real-time.
+    # adb shell output contains \r (carriage returns) which we strip with tr.
+    rm -f "$TEST_OUTPUT"
+    touch "$TEST_OUTPUT"
 
+    # Background progress watcher — tails the output file and prints test progress
+    (
+        _cur_test="" _cur_class="" _cur_num="" _total=""
+        tail -f "$TEST_OUTPUT" 2>/dev/null | tr -d '\r' | while IFS= read -r line; do
+            case "$line" in
+                *"INSTRUMENTATION_STATUS: numtests="*)
+                    _total="${line##*numtests=}" ;;
+                *"INSTRUMENTATION_STATUS: current="*)
+                    _cur_num="${line##*current=}" ;;
+                *"INSTRUMENTATION_STATUS: class="*)
+                    _cur_class="${line##*class=}"
+                    _cur_class="${_cur_class##*.}" ;;
+                *"INSTRUMENTATION_STATUS: test="*)
+                    _cur_test="${line##*test=}" ;;
+                *"INSTRUMENTATION_STATUS_CODE: 1"*)
+                    if [ -n "$_cur_test" ] && [ -n "$_total" ]; then
+                        printf "${CYAN}  [%s/%s]${NC} %s.%s ... " \
+                            "$_cur_num" "$_total" "$_cur_class" "$_cur_test"
+                    fi ;;
+                *"INSTRUMENTATION_STATUS_CODE: 0"*)
+                    [ -n "$_cur_test" ] && printf "${GREEN}PASS${NC}\n" ;;
+                *INSTRUMENTATION_STATUS_CODE:\ -*)
+                    [ -n "$_cur_test" ] && printf "${RED}FAIL${NC}\n" ;;
+                *"INSTRUMENTATION_RESULT"*|*"Process crashed"*)
+                    break ;;
+            esac
+        done
+    ) &
+    _watcher_pid=$!
+
+    # Run the actual tests (output goes to file)
     adb_cmd shell am instrument -w \
         -e targetPackage "$PACKAGE_NAME" \
         -e class "${TEST_PACKAGE}.DpadNavTest,${TEST_PACKAGE}.FocusTest" \
         "${TEST_PACKAGE}.test/${TEST_RUNNER}" \
-        2>&1 | tee "$TEST_OUTPUT" | while IFS= read -r line; do
+        > "$TEST_OUTPUT" 2>&1 || true
 
-        # Parse numtests (total test count)
-        case "$line" in
-            *"INSTRUMENTATION_STATUS: numtests="*)
-                _total_tests="${line##*numtests=}"
-                ;;
-            *"INSTRUMENTATION_STATUS: current="*)
-                _cur_num="${line##*current=}"
-                ;;
-            *"INSTRUMENTATION_STATUS: class="*)
-                _cur_class="${line##*class=}"
-                # Strip package prefix for shorter display
-                _cur_class="${_cur_class##*.}"
-                ;;
-            *"INSTRUMENTATION_STATUS: test="*)
-                _cur_test="${line##*test=}"
-                ;;
-            *"INSTRUMENTATION_STATUS_CODE: 1"*)
-                # Test started
-                if [ -n "$_cur_test" ] && [ -n "$_total_tests" ]; then
-                    printf "${CYAN}  [%s/%s]${NC} %s.%s ...\n" \
-                        "$_cur_num" "$_total_tests" "$_cur_class" "$_cur_test"
-                fi
-                ;;
-            *"INSTRUMENTATION_STATUS_CODE: 0"*)
-                # Test passed
-                if [ -n "$_cur_test" ]; then
-                    printf "         ${GREEN}PASS${NC}\n"
-                    _pass_count=$((_pass_count + 1))
-                fi
-                ;;
-            *"INSTRUMENTATION_STATUS_CODE: -"*)
-                # Test failed (code -1 or -2)
-                if [ -n "$_cur_test" ]; then
-                    printf "         ${RED}FAIL${NC}\n"
-                    _fail_count=$((_fail_count + 1))
-                    _failed_tests="${_failed_tests}${_cur_class}.${_cur_test}\n"
-                fi
-                ;;
-        esac
-    done
+    # Give the watcher a moment to finish reading, then kill it
+    sleep 1
+    kill "$_watcher_pid" 2>/dev/null || true
+    wait "$_watcher_pid" 2>/dev/null || true
 
     echo ""
 
-    # Post-run: parse the saved output file for issue tracking and summary
-    # (the while-pipe above runs in a subshell so we re-parse the file)
-    _pass_count=0
-    _fail_count=0
+    # Strip \r from the saved output so grep/sed work correctly
+    tr -d '\r' < "$TEST_OUTPUT" > "${TEST_OUTPUT}.clean" && mv "${TEST_OUTPUT}.clean" "$TEST_OUTPUT"
 
-    # Count passes and failures from the output
+    # Count passes and failures
     _pass_count=$(grep -c "INSTRUMENTATION_STATUS_CODE: 0" "$TEST_OUTPUT" 2>/dev/null || echo "0")
     _fail_count=$(grep -c "INSTRUMENTATION_STATUS_CODE: -" "$TEST_OUTPUT" 2>/dev/null || echo "0")
     _total_run=$((_pass_count + _fail_count))
@@ -335,7 +322,6 @@ if adb_cmd shell pm list packages | grep -q "$TEST_PACKAGE"; then
     # Extract failed test details and create issues
     _current_class=""
     _current_test=""
-    _in_failure=0
 
     while IFS= read -r line; do
         case "$line" in
@@ -346,7 +332,7 @@ if adb_cmd shell pm list packages | grep -q "$TEST_PACKAGE"; then
             *"INSTRUMENTATION_STATUS: test="*)
                 _current_test="${line##*test=}"
                 ;;
-            *"INSTRUMENTATION_STATUS_CODE: -"*)
+            *INSTRUMENTATION_STATUS_CODE:\ -*)
                 # This test failed — record an issue
                 local_test="${_current_class}.${_current_test}"
                 case "$_current_test" in
