@@ -209,11 +209,14 @@ log_ok "App launched"
 log_step "Step 7: Capturing screenshots of all screens"
 
 SCREEN_INDEX=2
+SCREEN_TOTAL=${#SCREENS[@]}
+SCREEN_COUNTER=0
 for screen in "${SCREENS[@]}"; do
+    SCREEN_COUNTER=$((SCREEN_COUNTER + 1))
     SCREEN_LABEL=$(echo "$screen" | sed 's/^\.//; s/Activity$//')
     FULL_SCREEN="${PACKAGE_NAME}/${PACKAGE_NAME}${screen}"
 
-    log_info "Navigating to: $FULL_SCREEN"
+    log_info "[${SCREEN_COUNTER}/${SCREEN_TOTAL}] Navigating to: $SCREEN_LABEL"
     adb_cmd shell am start -n "$FULL_SCREEN" 2>/dev/null || {
         log_warn "Could not start activity: $FULL_SCREEN"
         continue
@@ -259,49 +262,118 @@ TEST_OUTPUT="${REPORTS_DIR}/.test_output.txt"
 if adb_cmd shell pm list packages | grep -q "$TEST_PACKAGE"; then
     log_info "Running D-pad navigation and focus tests..."
 
+    # Run instrumentation and parse output in real-time for progress display.
+    # am instrument emits INSTRUMENTATION_STATUS lines we can parse:
+    #   numtests=N, current=N, class=..., test=..., INSTRUMENTATION_STATUS_CODE: 1 (start) / 0 (pass) / -1/-2 (fail)
+    _cur_test=""
+    _cur_class=""
+    _cur_num=""
+    _total_tests=""
+    _pass_count=0
+    _fail_count=0
+    _failed_tests=""
+
     adb_cmd shell am instrument -w \
         -e targetPackage "$PACKAGE_NAME" \
         -e class "${TEST_PACKAGE}.DpadNavTest,${TEST_PACKAGE}.FocusTest" \
         "${TEST_PACKAGE}.test/${TEST_RUNNER}" \
-        > "$TEST_OUTPUT" 2>&1 || true
+        2>&1 | tee "$TEST_OUTPUT" | while IFS= read -r line; do
 
-    # Parse test results for failures
-    log_info "Parsing test results..."
+        # Parse numtests (total test count)
+        case "$line" in
+            *"INSTRUMENTATION_STATUS: numtests="*)
+                _total_tests="${line##*numtests=}"
+                ;;
+            *"INSTRUMENTATION_STATUS: current="*)
+                _cur_num="${line##*current=}"
+                ;;
+            *"INSTRUMENTATION_STATUS: class="*)
+                _cur_class="${line##*class=}"
+                # Strip package prefix for shorter display
+                _cur_class="${_cur_class##*.}"
+                ;;
+            *"INSTRUMENTATION_STATUS: test="*)
+                _cur_test="${line##*test=}"
+                ;;
+            *"INSTRUMENTATION_STATUS_CODE: 1"*)
+                # Test started
+                if [ -n "$_cur_test" ] && [ -n "$_total_tests" ]; then
+                    printf "${CYAN}  [%s/%s]${NC} %s.%s ...\n" \
+                        "$_cur_num" "$_total_tests" "$_cur_class" "$_cur_test"
+                fi
+                ;;
+            *"INSTRUMENTATION_STATUS_CODE: 0"*)
+                # Test passed
+                if [ -n "$_cur_test" ]; then
+                    printf "         ${GREEN}PASS${NC}\n"
+                    _pass_count=$((_pass_count + 1))
+                fi
+                ;;
+            *"INSTRUMENTATION_STATUS_CODE: -"*)
+                # Test failed (code -1 or -2)
+                if [ -n "$_cur_test" ]; then
+                    printf "         ${RED}FAIL${NC}\n"
+                    _fail_count=$((_fail_count + 1))
+                    _failed_tests="${_failed_tests}${_cur_class}.${_cur_test}\n"
+                fi
+                ;;
+        esac
+    done
+
+    echo ""
+
+    # Post-run: parse the saved output file for issue tracking and summary
+    # (the while-pipe above runs in a subshell so we re-parse the file)
+    _pass_count=0
+    _fail_count=0
+
+    # Count passes and failures from the output
+    _pass_count=$(grep -c "INSTRUMENTATION_STATUS_CODE: 0" "$TEST_OUTPUT" 2>/dev/null || echo "0")
+    _fail_count=$(grep -c "INSTRUMENTATION_STATUS_CODE: -" "$TEST_OUTPUT" 2>/dev/null || echo "0")
+    _total_run=$((_pass_count + _fail_count))
+
+    # Extract failed test details and create issues
+    _current_class=""
+    _current_test=""
+    _in_failure=0
 
     while IFS= read -r line; do
-        if echo "$line" | grep -q "FAILURES\|Error in\|junit.framework.AssertionFailedError\|INSTRUMENTATION_RESULT"; then
-            # Extract test name and failure details
-            TEST_NAME=$(echo "$line" | sed -n 's/.*test=\([A-Za-z0-9_]*\).*/\1/p' | head -1)
-            [ -z "$TEST_NAME" ] && TEST_NAME=$(echo "$line" | sed -n 's/.*Error in \([A-Za-z0-9_]*\).*/\1/p' | head -1)
-            [ -z "$TEST_NAME" ] && TEST_NAME="unknown"
-
-            # Determine issue type from test name
-            case "$TEST_NAME" in
-                *dpad*|*Dpad*|*navigation*|*Navigation*|*reachable*|*Reachable*)
-                    add_issue "Navigation" "General" "D-pad test failed: $TEST_NAME — $line" "Medium"
-                    ;;
-                *focus*|*Focus*)
-                    add_issue "Focus" "General" "Focus test failed: $TEST_NAME — $line" "High"
-                    ;;
-                *dialog*|*Dialog*|*back*|*Back*)
-                    add_issue "UI" "Dialog" "Dialog/back test failed: $TEST_NAME — $line" "Medium"
-                    ;;
-                *)
-                    add_issue "UI" "General" "Test failed: $TEST_NAME — $line" "Medium"
-                    ;;
-            esac
-        fi
+        case "$line" in
+            *"INSTRUMENTATION_STATUS: class="*)
+                _current_class="${line##*class=}"
+                _current_class="${_current_class##*.}"
+                ;;
+            *"INSTRUMENTATION_STATUS: test="*)
+                _current_test="${line##*test=}"
+                ;;
+            *"INSTRUMENTATION_STATUS_CODE: -"*)
+                # This test failed — record an issue
+                local_test="${_current_class}.${_current_test}"
+                case "$_current_test" in
+                    *dpad*|*Dpad*|*navigation*|*Navigation*|*reachable*|*Reachable*|*grid*|*Grid*)
+                        add_issue "Navigation" "General" "D-pad test failed: $local_test" "Medium"
+                        ;;
+                    *focus*|*Focus*)
+                        add_issue "Focus" "General" "Focus test failed: $local_test" "High"
+                        ;;
+                    *dialog*|*Dialog*|*back*|*Back*)
+                        add_issue "UI" "Dialog" "Dialog/back test failed: $local_test" "Medium"
+                        ;;
+                    *)
+                        add_issue "UI" "General" "Test failed: $local_test" "Medium"
+                        ;;
+                esac
+                ;;
+        esac
     done < "$TEST_OUTPUT"
 
-    # Check for overall test result
-    if grep -q "OK (" "$TEST_OUTPUT"; then
-        PASS_COUNT=$(sed -n 's/.*\([0-9][0-9]*\) test.*/\1/p' "$TEST_OUTPUT" | head -1)
-        [ -z "$PASS_COUNT" ] && PASS_COUNT="?"
-        log_ok "All $PASS_COUNT tests passed"
-    elif grep -q "FAILURES" "$TEST_OUTPUT"; then
-        FAIL_COUNT=$(sed -n 's/.*\([0-9][0-9]*\) failure.*/\1/p' "$TEST_OUTPUT" | head -1)
-        [ -z "$FAIL_COUNT" ] && FAIL_COUNT="?"
-        log_warn "$FAIL_COUNT test failure(s) detected"
+    # Print summary
+    if [ "$_fail_count" -eq 0 ] && [ "$_pass_count" -gt 0 ]; then
+        log_ok "All $_pass_count/$_total_run tests passed"
+    elif [ "$_fail_count" -gt 0 ]; then
+        log_warn "$_fail_count/$_total_run test(s) failed"
+    elif grep -q "FAILURES" "$TEST_OUTPUT" 2>/dev/null; then
+        log_warn "Test failures detected (see output above)"
     fi
 else
     log_warn "Test package $TEST_PACKAGE not installed — skipping UI Automator tests"
