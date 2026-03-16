@@ -584,17 +584,20 @@ class DpadNavTest {
             (reachedElements.size.toFloat() / totalFocusable * 100).toInt()
         } else 0
 
-        assertTrue(
-            "D-pad reachability check: reached ${reachedElements.size} of $totalFocusable " +
-                "focusable elements ($reachPercentage%). Some elements may be unreachable. " +
-                "Add nextFocusUp/Down/Left/Right attributes to fix navigation gaps.",
-            reachedElements.size > 0
-        )
+        // Log detailed reachability info so it appears in test output
+        println("REACHABILITY: Reached ${reachedElements.size} of $totalFocusable focusable elements ($reachPercentage%)")
+        println("REACHABILITY: Reached elements: ${reachedElements.take(10)}")
 
-        // Warn if coverage is low but don't fail hard (scrollable content makes this tricky)
         if (reachPercentage < 50 && totalFocusable > 5) {
             TestHelper.takeScreenshot(device, "low_reachability_warning")
         }
+
+        assertTrue(
+            "D-pad reachability: only reached ${reachedElements.size} of $totalFocusable " +
+                "focusable elements ($reachPercentage%). At least 50% must be reachable via D-pad. " +
+                "Add nextFocusUp/Down/Left/Right attributes to fix navigation gaps.",
+            reachPercentage >= 50 || totalFocusable <= 5
+        )
     }
 
     /**
@@ -649,10 +652,13 @@ class DpadNavTest {
             }
         }
 
+        println("GRID: Visited ${visitedRegions.size}/9 screen regions: $visitedRegions")
+
         assertTrue(
             "D-pad grid traversal only reached ${visitedRegions.size} of 9 screen regions: " +
-                "$visitedRegions. Some areas of the screen may be unreachable via D-pad.",
-            visitedRegions.size >= 2
+                "$visitedRegions. Expected at least 3. Some areas of the screen may be " +
+                "unreachable via D-pad navigation.",
+            visitedRegions.size >= 3
         )
     }
 

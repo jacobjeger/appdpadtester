@@ -258,70 +258,98 @@ fi
 log_step "Step 9: Running UI Automator tests"
 
 TEST_OUTPUT="${REPORTS_DIR}/.test_output.txt"
+rm -f "$TEST_OUTPUT"
 
 if adb_cmd shell pm list packages | grep -q "$TEST_PACKAGE"; then
     log_info "Running D-pad navigation and focus tests..."
 
-    # Run tests to file, with a background watcher that prints progress in real-time.
-    # adb shell output contains \r (carriage returns) which we strip with tr.
-    rm -f "$TEST_OUTPUT"
-    touch "$TEST_OUTPUT"
+    _pass_total=0
+    _fail_total=0
+    _test_num=0
 
-    # Background progress watcher — tails the output file and prints test progress
-    (
-        _cur_test="" _cur_class="" _cur_num="" _total=""
-        tail -f "$TEST_OUTPUT" 2>/dev/null | tr -d '\r' | while IFS= read -r line; do
+    # Run each test class separately. Within each class, parse the
+    # am instrument output line-by-line for real-time progress.
+    # adb shell output has \r (carriage returns) — strip with tr.
+    _test_classes="${TEST_PACKAGE}.DpadNavTest ${TEST_PACKAGE}.FocusTest"
+
+    for _test_class in $_test_classes; do
+        _short_class="${_test_class##*.}"
+        echo ""
+        log_info "Running $_short_class..."
+
+        _cur_test=""
+        _cur_num=""
+        _total=""
+        _cur_class=""
+
+        adb_cmd shell am instrument -w \
+            -e targetPackage "$PACKAGE_NAME" \
+            -e class "$_test_class" \
+            "${TEST_PACKAGE}.test/${TEST_RUNNER}" 2>&1 \
+        | tr -d '\r' \
+        | while IFS= read -r line; do
+            # Save all output to file
+            echo "$line" >> "$TEST_OUTPUT"
+
             case "$line" in
                 *"INSTRUMENTATION_STATUS: numtests="*)
-                    _total="${line##*numtests=}" ;;
+                    _total="${line##*numtests=}"
+                    ;;
                 *"INSTRUMENTATION_STATUS: current="*)
-                    _cur_num="${line##*current=}" ;;
+                    _cur_num="${line##*current=}"
+                    ;;
                 *"INSTRUMENTATION_STATUS: class="*)
                     _cur_class="${line##*class=}"
-                    _cur_class="${_cur_class##*.}" ;;
+                    _cur_class="${_cur_class##*.}"
+                    ;;
                 *"INSTRUMENTATION_STATUS: test="*)
-                    _cur_test="${line##*test=}" ;;
+                    _cur_test="${line##*test=}"
+                    ;;
                 *"INSTRUMENTATION_STATUS_CODE: 1"*)
+                    # Test starting
                     if [ -n "$_cur_test" ] && [ -n "$_total" ]; then
-                        printf "${CYAN}  [%s/%s]${NC} %s.%s ... " \
+                        printf "  ${CYAN}[%s/%s]${NC} %s.%s ... " \
                             "$_cur_num" "$_total" "$_cur_class" "$_cur_test"
-                    fi ;;
+                    fi
+                    ;;
                 *"INSTRUMENTATION_STATUS_CODE: 0"*)
-                    [ -n "$_cur_test" ] && printf "${GREEN}PASS${NC}\n" ;;
-                *INSTRUMENTATION_STATUS_CODE:\ -*)
-                    [ -n "$_cur_test" ] && printf "${RED}FAIL${NC}\n" ;;
-                *"INSTRUMENTATION_RESULT"*|*"Process crashed"*)
-                    break ;;
+                    # Test passed
+                    if [ -n "$_cur_test" ]; then
+                        printf "${GREEN}PASS${NC}\n"
+                    fi
+                    ;;
+                *"INSTRUMENTATION_STATUS_CODE: -"*)
+                    # Test failed
+                    if [ -n "$_cur_test" ]; then
+                        printf "${RED}FAIL${NC}\n"
+                    fi
+                    ;;
+                *"INSTRUMENTATION_STATUS: stream="*)
+                    # Capture assertion messages / test detail output
+                    _stream="${line##*stream=}"
+                    # Print non-trivial stream messages (assertion failures, warnings)
+                    case "$_stream" in
+                        *.F*|*Error*|*FAIL*|*WARNING*|*assert*|*Assert*|*expected*|*CRITICAL*)
+                            printf "         ${YELLOW}%s${NC}\n" "$_stream"
+                            ;;
+                    esac
+                    ;;
             esac
         done
-    ) &
-    _watcher_pid=$!
-
-    # Run the actual tests (output goes to file)
-    adb_cmd shell am instrument -w \
-        -e targetPackage "$PACKAGE_NAME" \
-        -e class "${TEST_PACKAGE}.DpadNavTest,${TEST_PACKAGE}.FocusTest" \
-        "${TEST_PACKAGE}.test/${TEST_RUNNER}" \
-        > "$TEST_OUTPUT" 2>&1 || true
-
-    # Give the watcher a moment to finish reading, then kill it
-    sleep 1
-    kill "$_watcher_pid" 2>/dev/null || true
-    wait "$_watcher_pid" 2>/dev/null || true
+    done
 
     echo ""
 
-    # Strip \r from the saved output so grep/sed work correctly
-    tr -d '\r' < "$TEST_OUTPUT" > "${TEST_OUTPUT}.clean" && mv "${TEST_OUTPUT}.clean" "$TEST_OUTPUT"
+    # Post-run: re-parse saved output to count results and create issues
+    # (while-pipe runs in subshell so counters aren't available here)
+    _pass_total=$(grep -c "INSTRUMENTATION_STATUS_CODE: 0" "$TEST_OUTPUT" 2>/dev/null || echo "0")
+    _fail_total=$(grep -c "INSTRUMENTATION_STATUS_CODE: -" "$TEST_OUTPUT" 2>/dev/null || echo "0")
+    _total_run=$((_pass_total + _fail_total))
 
-    # Count passes and failures
-    _pass_count=$(grep -c "INSTRUMENTATION_STATUS_CODE: 0" "$TEST_OUTPUT" 2>/dev/null || echo "0")
-    _fail_count=$(grep -c "INSTRUMENTATION_STATUS_CODE: -" "$TEST_OUTPUT" 2>/dev/null || echo "0")
-    _total_run=$((_pass_count + _fail_count))
-
-    # Extract failed test details and create issues
+    # Extract details for failed tests
     _current_class=""
     _current_test=""
+    _current_stream=""
 
     while IFS= read -r line; do
         case "$line" in
@@ -332,34 +360,35 @@ if adb_cmd shell pm list packages | grep -q "$TEST_PACKAGE"; then
             *"INSTRUMENTATION_STATUS: test="*)
                 _current_test="${line##*test=}"
                 ;;
-            *INSTRUMENTATION_STATUS_CODE:\ -*)
-                # This test failed — record an issue
-                local_test="${_current_class}.${_current_test}"
+            *"INSTRUMENTATION_STATUS: stream="*)
+                _current_stream="${line##*stream=}"
+                ;;
+            *"INSTRUMENTATION_STATUS_CODE: -"*)
+                # This test failed — record an issue with details
+                _detail="${_current_class}.${_current_test}"
+                [ -n "$_current_stream" ] && _detail="${_detail}: ${_current_stream}"
+
                 case "$_current_test" in
                     *dpad*|*Dpad*|*navigation*|*Navigation*|*reachable*|*Reachable*|*grid*|*Grid*)
-                        add_issue "Navigation" "General" "D-pad test failed: $local_test" "Medium"
-                        ;;
-                    *focus*|*Focus*)
-                        add_issue "Focus" "General" "Focus test failed: $local_test" "High"
-                        ;;
+                        add_issue "Navigation" "General" "D-pad test failed: $_detail" "Medium" ;;
+                    *focus*|*Focus*|*Focus*)
+                        add_issue "Focus" "General" "Focus test failed: $_detail" "High" ;;
                     *dialog*|*Dialog*|*back*|*Back*)
-                        add_issue "UI" "Dialog" "Dialog/back test failed: $local_test" "Medium"
-                        ;;
+                        add_issue "UI" "Dialog" "Dialog/back test failed: $_detail" "Medium" ;;
                     *)
-                        add_issue "UI" "General" "Test failed: $local_test" "Medium"
-                        ;;
+                        add_issue "UI" "General" "Test failed: $_detail" "Medium" ;;
                 esac
+                _current_stream=""
                 ;;
         esac
     done < "$TEST_OUTPUT"
 
     # Print summary
-    if [ "$_fail_count" -eq 0 ] && [ "$_pass_count" -gt 0 ]; then
-        log_ok "All $_pass_count/$_total_run tests passed"
-    elif [ "$_fail_count" -gt 0 ]; then
-        log_warn "$_fail_count/$_total_run test(s) failed"
-    elif grep -q "FAILURES" "$TEST_OUTPUT" 2>/dev/null; then
-        log_warn "Test failures detected (see output above)"
+    echo ""
+    if [ "$_fail_total" -eq 0 ] && [ "$_pass_total" -gt 0 ]; then
+        log_ok "All $_pass_total/$_total_run tests passed"
+    elif [ "$_fail_total" -gt 0 ]; then
+        log_warn "$_fail_total/$_total_run test(s) failed"
     fi
 else
     log_warn "Test package $TEST_PACKAGE not installed — skipping UI Automator tests"

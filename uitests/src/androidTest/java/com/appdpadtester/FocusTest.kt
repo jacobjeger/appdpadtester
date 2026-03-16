@@ -101,6 +101,11 @@ class FocusTest {
             }
         }
 
+        println("FOCUS STATE: Tested $testedCount elements, $passCount passed, ${failedElements.size} failed")
+        if (failedElements.isNotEmpty()) {
+            println("FOCUS STATE: Failed elements: ${failedElements.take(10)}")
+        }
+
         assertTrue(
             "Tested $testedCount focusable elements: $passCount passed, " +
                 "${failedElements.size} failed focus state check. " +
@@ -432,13 +437,13 @@ class FocusTest {
             upPath.add(id)
         }
 
-        // The up path should be roughly the reverse of the down path
-        // (Not exact because of boundary behavior at top/bottom)
         val downUnique = downPath.distinct()
         val upUnique = upPath.distinct()
-
-        // At least some elements should be in common
         val common = downUnique.intersect(upUnique.toSet())
+
+        println("FOCUS ORDER (Down/Up): Down visited ${downUnique.size} unique elements, Up visited ${upUnique.size}, ${common.size} in common")
+        println("FOCUS ORDER (Down): ${downPath.take(10)}")
+        println("FOCUS ORDER (Up):   ${upPath.take(10)}")
 
         assertTrue(
             "Down and Up navigation paths share no common elements. " +
@@ -473,6 +478,8 @@ class FocusTest {
         val rightUnique = rightPath.distinct()
         val leftUnique = leftPath.distinct()
         val common = rightUnique.intersect(leftUnique.toSet())
+
+        println("FOCUS ORDER (Right/Left): Right visited ${rightUnique.size} unique, Left visited ${leftUnique.size}, ${common.size} in common")
 
         assertTrue(
             "Right and Left navigation paths share no common elements. " +
