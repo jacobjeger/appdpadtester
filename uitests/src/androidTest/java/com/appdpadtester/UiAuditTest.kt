@@ -27,6 +27,7 @@ import org.junit.runner.RunWith
 class UiAuditTest {
 
     private lateinit var device: UiDevice
+    private val p by lazy { TestHelper.screenPrefix() }
 
     @Before
     fun setUp() {
@@ -42,15 +43,15 @@ class UiAuditTest {
 
     @Test
     fun audit_elementSizes() {
-        println("[AUDIT] === Element Size Analysis ===")
+        println("${p}[AUDIT] === Element Size Analysis ===")
 
         val allFocusable = TestHelper.getAllFocusableElements(device)
         val allClickable = TestHelper.getAllClickableElements(device)
         val (screenW, screenH) = TestHelper.getScreenDimensions(device)
 
-        println("[AUDIT] Screen: ${screenW}x${screenH}")
-        println("[AUDIT] Focusable elements: ${allFocusable.size}")
-        println("[AUDIT] Clickable elements: ${allClickable.size}")
+        println("${p}[AUDIT] Screen: ${screenW}x${screenH}")
+        println("${p}[AUDIT] Focusable elements: ${allFocusable.size}")
+        println("${p}[AUDIT] Clickable elements: ${allClickable.size}")
 
         // Recommended minimum touch/focus target: 48dp (roughly 48px at mdpi)
         val minTargetPx = 48
@@ -66,20 +67,20 @@ class UiAuditTest {
 
             if (w == 0 || h == 0) {
                 zeroSizeCount++
-                println("[ISSUE] Zero-size focusable element: $id (${w}x${h}) — traps D-pad focus")
+                println("${p}[ISSUE] ${TestHelper.elementInfo(el)} Zero-size focusable element (${w}x${h}) — traps D-pad focus. Fix: set android:visibility or remove android:focusable")
             } else if (w < minTargetPx && h < minTargetPx) {
                 tooSmallCount++
-                println("[WARN] Small focus target: $id (${w}x${h}px) — recommended minimum 48x48")
+                println("${p}[WARN] ${TestHelper.elementInfo(el)} Small focus target (${w}x${h}px). Fix: add android:minWidth=\"48dp\" android:minHeight=\"48dp\"")
             } else if (w < minTargetPx || h < minTargetPx) {
                 tooNarrowCount++
-                println("[WARN] Narrow focus target: $id (${w}x${h}px) — one dimension below 48px")
+                println("${p}[WARN] ${TestHelper.elementInfo(el)} Narrow focus target (${w}x${h}px) — one dimension below 48px")
             }
         }
 
         if (zeroSizeCount == 0 && tooSmallCount == 0 && tooNarrowCount == 0) {
-            println("[OK] All ${allFocusable.size} focusable elements meet minimum size requirements")
+            println("${p}[OK] All ${allFocusable.size} focusable elements meet minimum size requirements")
         } else {
-            println("[AUDIT] Summary: $zeroSizeCount zero-size, $tooSmallCount too small, $tooNarrowCount too narrow")
+            println("${p}[AUDIT] Summary: $zeroSizeCount zero-size, $tooSmallCount too small, $tooNarrowCount too narrow")
         }
 
         // Check for overlapping focusable elements
@@ -99,17 +100,17 @@ class UiAuditTest {
                         val idA = allFocusable[i].resourceName ?: allFocusable[i].text ?: "?"
                         val idB = allFocusable[j].resourceName ?: allFocusable[j].text ?: "?"
                         if (overlapCount <= 5) {
-                            println("[WARN] Overlapping focusable elements: '$idA' and '$idB' — may confuse D-pad navigation")
+                            println("${p}[WARN] Overlapping focusable elements: '$idA' and '$idB' — may confuse D-pad navigation")
                         }
                     }
                 }
             }
         }
         if (overlapCount > 5) {
-            println("[WARN] ... and ${overlapCount - 5} more overlapping pairs")
+            println("${p}[WARN] ... and ${overlapCount - 5} more overlapping pairs")
         }
         if (overlapCount == 0) {
-            println("[OK] No overlapping focusable elements detected")
+            println("${p}[OK] No overlapping focusable elements detected")
         }
 
         TestHelper.takeScreenshot(device, "audit_layout")
@@ -121,14 +122,14 @@ class UiAuditTest {
 
     @Test
     fun audit_textReadability() {
-        println("[AUDIT] === Text Readability Analysis ===")
+        println("${p}[AUDIT] === Text Readability Analysis ===")
 
         val hierarchy = TestHelper.dumpHierarchy(device)
         val (screenW, _) = TestHelper.getScreenDimensions(device)
 
         // Find all text-bearing elements
         val allText = device.findObjects(By.textLength(1, 10000)) ?: emptyList()
-        println("[AUDIT] Text elements found: ${allText.size}")
+        println("${p}[AUDIT] Text elements found: ${allText.size}")
 
         var truncatedCount = 0
         var tinyTextCount = 0
@@ -144,7 +145,7 @@ class UiAuditTest {
             if (text.length > 10 && w < text.length * 5) {
                 truncatedCount++
                 if (truncatedCount <= 3) {
-                    println("[WARN] Possibly truncated text: '${text.take(30)}...' in ${w}px wide container")
+                    println("${p}[WARN] Possibly truncated text: '${text.take(30)}...' in ${w}px wide container")
                 }
             }
 
@@ -152,7 +153,7 @@ class UiAuditTest {
             if (h < 20 && text.isNotEmpty()) {
                 tinyTextCount++
                 if (tinyTextCount <= 3) {
-                    println("[WARN] Very small text element (${h}px tall): '${text.take(30)}'")
+                    println("${p}[WARN] Very small text element (${h}px tall): '${text.take(30)}'")
                 }
             }
         }
@@ -166,7 +167,7 @@ class UiAuditTest {
                 emptyButtonCount++
                 val id = el.resourceName ?: el.className ?: "unknown"
                 if (emptyButtonCount <= 5) {
-                    println("[ISSUE] Clickable element with no text or description: $id — inaccessible to screen readers and unclear for users")
+                    println("${p}[ISSUE] Clickable element with no text or description: $id — inaccessible to screen readers and unclear for users")
                 }
             }
         }
@@ -176,7 +177,7 @@ class UiAuditTest {
         if (emptyButtonCount > 5) println("[WARN] $emptyButtonCount total unlabeled clickable elements")
 
         if (truncatedCount == 0 && tinyTextCount == 0 && emptyButtonCount == 0) {
-            println("[OK] All text elements appear readable and all buttons are labeled")
+            println("${p}[OK] All text elements appear readable and all buttons are labeled")
         }
     }
 
@@ -186,7 +187,7 @@ class UiAuditTest {
 
     @Test
     fun audit_accessibility() {
-        println("[AUDIT] === Accessibility Analysis ===")
+        println("${p}[AUDIT] === Accessibility Analysis ===")
 
         val allFocusable = TestHelper.getAllFocusableElements(device)
         var missingDescCount = 0
@@ -203,25 +204,25 @@ class UiAuditTest {
                 missingDescCount++
                 if (missingDescCount <= 5) {
                     val className = el.className?.substringAfterLast('.') ?: "?"
-                    println("[ISSUE] Focusable $className '$id' has no text or contentDescription")
+                    println("${p}[ISSUE] Focusable $className '$id' has no text or contentDescription")
                 }
             }
         }
 
         if (missingDescCount > 5) {
-            println("[ISSUE] ... and ${missingDescCount - 5} more elements missing descriptions")
+            println("${p}[ISSUE] ... and ${missingDescCount - 5} more elements missing descriptions")
         }
 
         val total = hasDescCount + missingDescCount
         val pct = if (total > 0) (hasDescCount * 100 / total) else 100
-        println("[AUDIT] Accessibility coverage: $hasDescCount/$total elements labeled ($pct%)")
+        println("${p}[AUDIT] Accessibility coverage: $hasDescCount/$total elements labeled ($pct%)")
 
         if (pct >= 90) {
-            println("[OK] Good accessibility coverage ($pct%)")
+            println("${p}[OK] Good accessibility coverage ($pct%)")
         } else if (pct >= 60) {
-            println("[WARN] Moderate accessibility coverage ($pct%) — consider adding contentDescription to unlabeled elements")
+            println("${p}[WARN] Moderate accessibility coverage ($pct%) — consider adding contentDescription to unlabeled elements")
         } else {
-            println("[ISSUE] Poor accessibility coverage ($pct%) — many elements lack text/contentDescription")
+            println("${p}[ISSUE] Poor accessibility coverage ($pct%) — many elements lack text/contentDescription")
         }
     }
 
@@ -231,7 +232,7 @@ class UiAuditTest {
 
     @Test
     fun audit_navigationEfficiency() {
-        println("[AUDIT] === Navigation Efficiency Analysis ===")
+        println("${p}[AUDIT] === Navigation Efficiency Analysis ===")
 
         val (screenW, screenH) = TestHelper.getScreenDimensions(device)
 
@@ -265,7 +266,7 @@ class UiAuditTest {
             }
         }
 
-        println("[AUDIT] Screen regions reachable via D-pad: ${regionFirstReach.size}/9")
+        println("${p}[AUDIT] Screen regions reachable via D-pad: ${regionFirstReach.size}/9")
         for ((region, presses) in regionFirstReach.entries.sortedBy { it.value }) {
             val efficiency = when {
                 presses <= 3 -> "excellent"
@@ -273,7 +274,7 @@ class UiAuditTest {
                 presses <= 15 -> "acceptable"
                 else -> "slow"
             }
-            println("[AUDIT]   $region: $presses presses ($efficiency)")
+            println("${p}[AUDIT]   $region: $presses presses ($efficiency)")
         }
 
         val unreached = listOf(
@@ -283,7 +284,7 @@ class UiAuditTest {
         ).filter { it !in regionFirstReach }
 
         if (unreached.isNotEmpty()) {
-            println("[WARN] Unreachable screen regions: ${unreached.joinToString(", ")}")
+            println("${p}[WARN] Unreachable screen regions: ${unreached.joinToString(", ")}")
         }
 
         // Check average presses to reach content
@@ -291,7 +292,7 @@ class UiAuditTest {
             regionFirstReach.values.average()
         } else 0.0
 
-        println("[AUDIT] Average D-pad presses to reach content: %.1f".format(avgPresses))
+        println("${p}[AUDIT] Average D-pad presses to reach content: %.1f".format(avgPresses))
         when {
             avgPresses <= 5 -> println("[OK] Navigation is efficient")
             avgPresses <= 10 -> println("[WARN] Navigation could be more efficient — consider reorganizing layout")
@@ -305,15 +306,15 @@ class UiAuditTest {
 
     @Test
     fun audit_initialFocus() {
-        println("[AUDIT] === Initial Focus & First Impression ===")
+        println("${p}[AUDIT] === Initial Focus & First Impression ===")
 
         val (screenW, screenH) = TestHelper.getScreenDimensions(device)
         val focused = TestHelper.getFocusedElement(device)
 
         if (focused == null) {
-            println("[ISSUE] NO INITIAL FOCUS — the app launches with nothing focused")
-            println("[ISSUE] D-pad users cannot interact without initial focus")
-            println("[ISSUE] Fix: add android:focusable='true' and requestFocus() to the primary element")
+            println("${p}[ISSUE] NO INITIAL FOCUS — the app launches with nothing focused")
+            println("${p}[ISSUE] D-pad users cannot interact without initial focus")
+            println("${p}[ISSUE] Fix: add android:focusable='true' and requestFocus() to the primary element")
             fail("No initial focus on launch")
             return
         }
@@ -323,8 +324,8 @@ class UiAuditTest {
         val className = focused.className?.substringAfterLast('.') ?: "?"
         val resName = focused.resourceName ?: "no-id"
 
-        println("[AUDIT] Initially focused: $className '$text' (${resName})")
-        println("[AUDIT] Position: ${bounds.left},${bounds.top} — ${bounds.right},${bounds.bottom}")
+        println("${p}[AUDIT] Initially focused: $className '$text' (${resName})")
+        println("${p}[AUDIT] Position: ${bounds.left},${bounds.top} — ${bounds.right},${bounds.bottom}")
 
         // Is the initial focus in a sensible position?
         val centerX = bounds.centerX()
@@ -341,31 +342,31 @@ class UiAuditTest {
             else -> "right"
         }
 
-        println("[AUDIT] Focus starts at: $verticalPosition-$horizontalPosition of screen")
+        println("${p}[AUDIT] Focus starts at: $verticalPosition-$horizontalPosition of screen")
 
         if (verticalPosition == "top" || verticalPosition == "middle") {
-            println("[OK] Initial focus is at top/middle — good starting position")
+            println("${p}[OK] Initial focus is at top/middle — good starting position")
         } else {
-            println("[WARN] Initial focus is at bottom of screen — users may not see it immediately")
+            println("${p}[WARN] Initial focus is at bottom of screen — users may not see it immediately")
         }
 
         // Is the focused element clickable?
         if (focused.isClickable) {
-            println("[OK] Initially focused element is clickable (interactive)")
+            println("${p}[OK] Initially focused element is clickable (interactive)")
         } else {
-            println("[WARN] Initially focused element is not clickable — consider focusing an actionable element first")
+            println("${p}[WARN] Initially focused element is not clickable — consider focusing an actionable element first")
         }
 
         // How many elements are visible on launch?
         val allVisible = TestHelper.getAllFocusableElements(device)
-        println("[AUDIT] Focusable elements visible on launch: ${allVisible.size}")
+        println("${p}[AUDIT] Focusable elements visible on launch: ${allVisible.size}")
 
         if (allVisible.isEmpty()) {
-            println("[ISSUE] No focusable elements on launch screen — D-pad users are stuck")
+            println("${p}[ISSUE] No focusable elements on launch screen — D-pad users are stuck")
         } else if (allVisible.size == 1) {
-            println("[WARN] Only 1 focusable element — very limited interaction")
+            println("${p}[WARN] Only 1 focusable element — very limited interaction")
         } else {
-            println("[OK] ${allVisible.size} focusable elements available")
+            println("${p}[OK] ${allVisible.size} focusable elements available")
         }
 
         TestHelper.takeScreenshot(device, "audit_initial_focus")
@@ -377,7 +378,7 @@ class UiAuditTest {
 
     @Test
     fun audit_focusIndicators() {
-        println("[AUDIT] === Focus Indicator Analysis ===")
+        println("${p}[AUDIT] === Focus Indicator Analysis ===")
 
         var testedCount = 0
         var noVisualChangeCount = 0
@@ -387,7 +388,7 @@ class UiAuditTest {
         for (i in 1..20) {
             val focused = TestHelper.getFocusedElement(device)
             if (focused == null) {
-                println("[WARN] Focus lost at step $i during navigation")
+                println("${p}[WARN] Focus lost at step $i during navigation")
                 TestHelper.pressDown(device, 300)
                 continue
             }
@@ -402,7 +403,7 @@ class UiAuditTest {
             if (!isFocused) {
                 noVisualChangeCount++
                 problematicElements.add(id)
-                println("[WARN] Element '$id' has focus but isFocused=false — focus indicator may be missing")
+                println("${p}[WARN] Element '$id' has focus but isFocused=false — focus indicator may be missing")
             }
 
             // Move to next element
@@ -419,17 +420,17 @@ class UiAuditTest {
                     if (afterBounds == bounds && afterSelected == isSelected && !isSelected) {
                         // This might lack a visible focus indicator
                         // (Can't detect color changes via UiAutomator)
-                        println("[AUDIT] Element '$id' — no detectable state change when unfocused (color changes not detectable)")
+                        println("${p}[AUDIT] Element '$id' — no detectable state change when unfocused (color changes not detectable)")
                     }
                 }
             }
         }
 
-        println("[AUDIT] Tested $testedCount elements for focus indicators")
+        println("${p}[AUDIT] Tested $testedCount elements for focus indicators")
         if (noVisualChangeCount > 0) {
-            println("[WARN] $noVisualChangeCount element(s) may lack visible focus indicators")
+            println("${p}[WARN] $noVisualChangeCount element(s) may lack visible focus indicators")
         } else {
-            println("[OK] All tested elements report correct focus state")
+            println("${p}[OK] All tested elements report correct focus state")
         }
 
         TestHelper.takeScreenshot(device, "audit_focus_indicators")
@@ -441,7 +442,7 @@ class UiAuditTest {
 
     @Test
     fun audit_responseTime() {
-        println("[AUDIT] === UI Response Time Analysis ===")
+        println("${p}[AUDIT] === UI Response Time Analysis ===")
 
         val timings = mutableListOf<Long>()
 
@@ -458,10 +459,10 @@ class UiAuditTest {
         val maxMs = timings.maxOrNull() ?: 0
         val minMs = timings.minOrNull() ?: 0
 
-        println("[AUDIT] D-pad response times (10 presses):")
-        println("[AUDIT]   Average: ${avgMs.toInt()}ms")
-        println("[AUDIT]   Fastest: ${minMs}ms")
-        println("[AUDIT]   Slowest: ${maxMs}ms")
+        println("${p}[AUDIT] D-pad response times (10 presses):")
+        println("${p}[AUDIT]   Average: ${avgMs.toInt()}ms")
+        println("${p}[AUDIT]   Fastest: ${minMs}ms")
+        println("${p}[AUDIT]   Slowest: ${maxMs}ms")
 
         when {
             avgMs <= 100 -> println("[OK] Excellent response time — feels instant")
@@ -471,7 +472,7 @@ class UiAuditTest {
         }
 
         if (maxMs > 1000) {
-            println("[WARN] Worst-case response was ${maxMs}ms — occasional jank detected")
+            println("${p}[WARN] Worst-case response was ${maxMs}ms — occasional jank detected")
         }
 
         // Test Center button response
@@ -483,7 +484,7 @@ class UiAuditTest {
         val afterHierarchy = TestHelper.dumpHierarchy(device)
 
         if (beforeHierarchy != afterHierarchy) {
-            println("[AUDIT] Center/OK response time: ${centerElapsed}ms")
+            println("${p}[AUDIT] Center/OK response time: ${centerElapsed}ms")
             when {
                 centerElapsed <= 300 -> println("[OK] Action response is snappy")
                 centerElapsed <= 800 -> println("[OK] Action response is acceptable")
@@ -492,7 +493,7 @@ class UiAuditTest {
             TestHelper.pressBack(device)
             TestHelper.waitForIdle(device, 1000)
         } else {
-            println("[AUDIT] Center press had no effect (no action bound to focused element)")
+            println("${p}[AUDIT] Center press had no effect (no action bound to focused element)")
         }
     }
 
@@ -502,13 +503,13 @@ class UiAuditTest {
 
     @Test
     fun audit_spacingAndDensity() {
-        println("[AUDIT] === Spacing & Density Analysis ===")
+        println("${p}[AUDIT] === Spacing & Density Analysis ===")
 
         val allFocusable = TestHelper.getAllFocusableElements(device)
         val (screenW, screenH) = TestHelper.getScreenDimensions(device)
 
         if (allFocusable.size < 2) {
-            println("[AUDIT] Too few focusable elements to analyze spacing")
+            println("${p}[AUDIT] Too few focusable elements to analyze spacing")
             return
         }
 
@@ -534,10 +535,10 @@ class UiAuditTest {
             val minGap = verticalGaps.minOrNull() ?: 0
             val maxGap = verticalGaps.maxOrNull() ?: 0
 
-            println("[AUDIT] Vertical gaps between elements:")
-            println("[AUDIT]   Average: ${avgGap.toInt()}px")
-            println("[AUDIT]   Smallest: ${minGap}px")
-            println("[AUDIT]   Largest: ${maxGap}px")
+            println("${p}[AUDIT] Vertical gaps between elements:")
+            println("${p}[AUDIT]   Average: ${avgGap.toInt()}px")
+            println("${p}[AUDIT]   Smallest: ${minGap}px")
+            println("${p}[AUDIT]   Largest: ${maxGap}px")
 
             when {
                 avgGap >= 16 -> println("[OK] Good vertical spacing between elements")
@@ -547,9 +548,9 @@ class UiAuditTest {
         }
 
         if (tooCloseElements.isNotEmpty()) {
-            println("[WARN] ${tooCloseElements.size} element pair(s) have <5px gap:")
+            println("${p}[WARN] ${tooCloseElements.size} element pair(s) have <5px gap:")
             for ((a, b) in tooCloseElements.take(3)) {
-                println("[WARN]   '$a' and '$b'")
+                println("${p}[WARN]   '$a' and '$b'")
             }
         }
 
@@ -561,7 +562,7 @@ class UiAuditTest {
         val screenArea = screenW.toLong() * screenH.toLong()
         val utilization = if (screenArea > 0) (totalFocusableArea * 100 / screenArea).toInt() else 0
 
-        println("[AUDIT] Interactive area coverage: $utilization% of screen")
+        println("${p}[AUDIT] Interactive area coverage: $utilization% of screen")
         when {
             utilization < 5 -> println("[WARN] Very sparse layout — consider adding more interactive elements or making them larger")
             utilization > 80 -> println("[WARN] Very dense layout — may feel cluttered")
@@ -575,12 +576,12 @@ class UiAuditTest {
 
     @Test
     fun audit_dpadCompleteness() {
-        println("[AUDIT] === D-pad Navigation Completeness ===")
+        println("${p}[AUDIT] === D-pad Navigation Completeness ===")
 
         // Count total focusable elements
         val totalFocusable = TestHelper.getAllFocusableElements(device)
         val totalCount = totalFocusable.size
-        println("[AUDIT] Total focusable elements on screen: $totalCount")
+        println("${p}[AUDIT] Total focusable elements on screen: $totalCount")
 
         // Track all reachable elements via D-pad
         val reached = mutableSetOf<String>()
@@ -620,12 +621,12 @@ class UiAuditTest {
         }
 
         val reachPct = if (totalCount > 0) (reached.size * 100 / totalCount) else 100
-        println("[AUDIT] Reachable via D-pad: ${reached.size}/$totalCount ($reachPct%)")
+        println("${p}[AUDIT] Reachable via D-pad: ${reached.size}/$totalCount ($reachPct%)")
 
         if (unreachedIds.isNotEmpty() && unreachedIds.size <= 10) {
-            println("[WARN] Potentially unreachable elements:")
+            println("${p}[WARN] Potentially unreachable elements:")
             for (id in unreachedIds.take(5)) {
-                println("[WARN]   $id")
+                println("${p}[WARN]   $id")
             }
         }
 
@@ -648,26 +649,25 @@ class UiAuditTest {
 
     @Test
     fun audit_overallScore() {
-        println("[AUDIT] === Overall Usability Score ===")
+        val p = TestHelper.screenPrefix()
+        println("${p}[AUDIT] === Overall Usability Score ===")
 
         var score = 100
-        val deductions = mutableListOf<String>()
+        val deductions = mutableListOf<Pair<Int, String>>() // penalty -> description
 
-        // Check 1: Initial focus
+        // Check 1: Initial focus (critical)
         val hasFocus = TestHelper.getFocusedElement(device) != null
         if (!hasFocus) {
-            score -= 30
-            deductions.add("-30: No initial focus")
+            deductions.add(Pair(30, "No initial focus — D-pad users can't interact"))
         }
 
         // Check 2: Number of focusable elements
-        val focusableCount = TestHelper.getAllFocusableElements(device).size
+        val allFocusable = TestHelper.getAllFocusableElements(device)
+        val focusableCount = allFocusable.size
         if (focusableCount == 0) {
-            score -= 30
-            deductions.add("-30: No focusable elements")
+            deductions.add(Pair(30, "No focusable elements on screen"))
         } else if (focusableCount == 1) {
-            score -= 10
-            deductions.add("-10: Only 1 focusable element")
+            deductions.add(Pair(10, "Only 1 focusable element — very limited interaction"))
         }
 
         // Check 3: Basic navigation works
@@ -678,8 +678,7 @@ class UiAuditTest {
             TestHelper.pressRight(device, 300)
             val afterRight = TestHelper.getFocusedElementId(device)
             if (beforeId == afterRight) {
-                score -= 20
-                deductions.add("-20: D-pad navigation has no effect (focus doesn't move)")
+                deductions.add(Pair(20, "D-pad navigation has no effect (focus doesn't move)"))
             }
         }
 
@@ -691,12 +690,10 @@ class UiAuditTest {
         }
         if (focusLostCount > 0) {
             val penalty = minOf(focusLostCount * 5, 20)
-            score -= penalty
-            deductions.add("-$penalty: Focus lost $focusLostCount times during navigation")
+            deductions.add(Pair(penalty, "Focus lost $focusLostCount times during navigation"))
         }
 
         // Check 5: Accessibility labels
-        val allFocusable = TestHelper.getAllFocusableElements(device)
         var unlabeledCount = 0
         for (el in allFocusable) {
             if (el.text.isNullOrBlank() && el.contentDescription.isNullOrBlank()) {
@@ -706,11 +703,9 @@ class UiAuditTest {
         if (allFocusable.isNotEmpty()) {
             val unlabeledPct = unlabeledCount * 100 / allFocusable.size
             if (unlabeledPct > 50) {
-                score -= 10
-                deductions.add("-10: ${unlabeledPct}% of elements lack labels")
+                deductions.add(Pair(10, "${unlabeledPct}% of elements lack text/contentDescription"))
             } else if (unlabeledPct > 20) {
-                score -= 5
-                deductions.add("-5: ${unlabeledPct}% of elements lack labels")
+                deductions.add(Pair(5, "${unlabeledPct}% of elements lack text/contentDescription"))
             }
         }
 
@@ -719,30 +714,143 @@ class UiAuditTest {
             val b = it.visibleBounds; b.width() == 0 || b.height() == 0
         }
         if (zeroSize > 0) {
-            score -= 10
-            deductions.add("-10: $zeroSize zero-size focusable element(s)")
+            deductions.add(Pair(10, "$zeroSize zero-size focusable element(s) — trap D-pad focus"))
         }
 
-        // Clamp score
-        score = maxOf(score, 0)
+        // Check 7: Small touch targets (<48px)
+        val smallTargets = allFocusable.count {
+            val b = it.visibleBounds; b.width() < 48 && b.height() < 48 && b.width() > 0
+        }
+        if (smallTargets > 3) {
+            deductions.add(Pair(5, "$smallTargets focusable elements smaller than 48x48px"))
+        }
 
-        println("[AUDIT] ================================")
-        if (deductions.isEmpty()) {
-            println("[AUDIT] No issues found!")
-        } else {
-            for (d in deductions) {
-                println("[AUDIT]   $d")
+        // Check 8: Overlapping focusable elements
+        var overlapCount = 0
+        for (i in allFocusable.indices) {
+            for (j in i + 1 until allFocusable.size) {
+                if (Rect.intersects(allFocusable[i].visibleBounds, allFocusable[j].visibleBounds)) {
+                    val overlap = calculateOverlap(allFocusable[i].visibleBounds, allFocusable[j].visibleBounds)
+                    val minArea = minOf(
+                        allFocusable[i].visibleBounds.width() * allFocusable[i].visibleBounds.height(),
+                        allFocusable[j].visibleBounds.width() * allFocusable[j].visibleBounds.height()
+                    )
+                    if (minArea > 0 && overlap > minArea * 0.25) overlapCount++
+                }
             }
         }
-        println("[AUDIT] ================================")
-        println("[AUDIT] USABILITY SCORE: $score / 100")
-        println("[AUDIT] ================================")
+        if (overlapCount > 0) {
+            deductions.add(Pair(5, "$overlapCount overlapping focusable element pair(s)"))
+        }
 
-        when {
-            score >= 90 -> println("[OK] Excellent D-pad usability")
-            score >= 70 -> println("[OK] Good usability with minor issues")
-            score >= 50 -> println("[WARN] Usability needs improvement")
-            else -> println("[ISSUE] Significant usability problems — app is difficult to use with D-pad")
+        // Check 9: Response time
+        val timings = mutableListOf<Long>()
+        for (i in 1..5) {
+            val t = System.currentTimeMillis()
+            device.pressKeyCode(KeyEvent.KEYCODE_DPAD_DOWN)
+            device.waitForIdle(3000)
+            timings.add(System.currentTimeMillis() - t)
+        }
+        val avgResponseMs = timings.average()
+        if (avgResponseMs > 1000) {
+            deductions.add(Pair(10, "Slow D-pad response time (avg ${avgResponseMs.toInt()}ms)"))
+        } else if (avgResponseMs > 500) {
+            deductions.add(Pair(5, "Moderate D-pad response time (avg ${avgResponseMs.toInt()}ms)"))
+        }
+
+        // Check 10: Bidirectional consistency (quick check)
+        var inconsistentPairs = 0
+        TestHelper.launchApp(device)
+        TestHelper.waitForIdle(device, 1500)
+        for (i in 1..5) {
+            val bId = TestHelper.getFocusedElementId(device)
+            TestHelper.pressDown(device, 200)
+            val aId = TestHelper.getFocusedElementId(device)
+            if (aId != null && aId != bId) {
+                TestHelper.pressUp(device, 200)
+                if (TestHelper.getFocusedElementId(device) != bId) inconsistentPairs++
+                TestHelper.pressDown(device, 200)
+            }
+        }
+        if (inconsistentPairs > 2) {
+            deductions.add(Pair(5, "D-pad Down/Up inconsistent — $inconsistentPairs of 5 pairs don't return"))
+        }
+
+        // Check 11: Cross-axis drift (quick check)
+        TestHelper.launchApp(device)
+        TestHelper.waitForIdle(device, 1500)
+        val driftStartX = TestHelper.getFocusedBounds(device)?.centerX() ?: 0
+        for (i in 1..8) TestHelper.pressDown(device, 150)
+        val driftEndX = TestHelper.getFocusedBounds(device)?.centerX() ?: driftStartX
+        val drift = Math.abs(driftEndX - driftStartX)
+        val (sw, _) = TestHelper.getScreenDimensions(device)
+        if (drift > sw / 4) {
+            deductions.add(Pair(5, "Significant cross-axis drift (${drift}px horizontal shift during vertical nav)"))
+        }
+
+        // Check 12: Navigation completeness (quick reachability)
+        TestHelper.launchApp(device)
+        TestHelper.waitForIdle(device, 1500)
+        val reached = mutableSetOf<String>()
+        TestHelper.getFocusedElementId(device)?.let { reached.add(it) }
+        for (i in 1..20) {
+            TestHelper.pressDown(device, 150)
+            TestHelper.getFocusedElementId(device)?.let { reached.add(it) }
+        }
+        for (i in 1..10) {
+            TestHelper.pressRight(device, 150)
+            TestHelper.getFocusedElementId(device)?.let { reached.add(it) }
+        }
+        val reachPct = if (focusableCount > 0) reached.size * 100 / focusableCount else 100
+        if (reachPct < 50) {
+            deductions.add(Pair(10, "Poor D-pad coverage — only $reachPct% of elements reachable"))
+        } else if (reachPct < 70) {
+            deductions.add(Pair(5, "Incomplete D-pad coverage — $reachPct% of elements reachable"))
+        }
+
+        // Apply deductions
+        for ((penalty, _) in deductions) {
+            score -= penalty
+        }
+        score = maxOf(score, 0)
+
+        // Letter grade
+        val grade = when {
+            score >= 90 -> "A"
+            score >= 80 -> "B"
+            score >= 70 -> "C"
+            score >= 50 -> "D"
+            else -> "F"
+        }
+
+        println("${p}[AUDIT] ================================")
+        println("${p}[AUDIT] USABILITY SCORE: $score / 100  (Grade: $grade)")
+        println("${p}[AUDIT] ================================")
+
+        if (deductions.isEmpty()) {
+            println("${p}[AUDIT] No issues found!")
+        } else {
+            // Sort by penalty (biggest first)
+            val sorted = deductions.sortedByDescending { it.first }
+            for ((penalty, desc) in sorted) {
+                println("${p}[AUDIT]   -$penalty: $desc")
+            }
+
+            // TOP 3 PRIORITIES
+            println("${p}[AUDIT] ")
+            println("${p}[AUDIT] TOP 3 PRIORITIES:")
+            for ((i, pair) in sorted.take(3).withIndex()) {
+                println("${p}[AUDIT]   ${i + 1}. ${pair.second} (-${pair.first} pts)")
+            }
+        }
+
+        println("${p}[AUDIT] ================================")
+        when (grade) {
+            "A" -> println("${p}[OK] Grade A — Excellent D-pad usability")
+            "B" -> println("${p}[OK] Grade B — Good usability with minor issues")
+            "C" -> println("${p}[WARN] Grade C — Usability needs improvement")
+            "D" -> println("${p}[WARN] Grade D — Significant usability problems")
+            "F" -> println("${p}[ISSUE] Grade F — App is very difficult to use with D-pad")
         }
     }
 

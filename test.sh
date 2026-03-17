@@ -270,7 +270,7 @@ if adb_cmd shell pm list packages | grep -q "$TEST_PACKAGE"; then
     # Run each test class separately. Within each class, parse the
     # am instrument output line-by-line for real-time progress.
     # adb shell output has \r (carriage returns) — strip with tr.
-    _test_classes="${TEST_PACKAGE}.DpadNavTest ${TEST_PACKAGE}.FocusTest ${TEST_PACKAGE}.UiAuditTest ${TEST_PACKAGE}.DpadAnalysisTest"
+    _test_classes="${TEST_PACKAGE}.DpadNavTest ${TEST_PACKAGE}.FocusTest ${TEST_PACKAGE}.UiAuditTest ${TEST_PACKAGE}.DpadAnalysisTest ${TEST_PACKAGE}.DpadAdvancedTest"
 
     for _test_class in $_test_classes; do
         _short_class="${_test_class##*.}"
@@ -414,6 +414,68 @@ if adb_cmd shell pm list packages | grep -q "$TEST_PACKAGE"; then
     elif [ "$_fail_total" -gt 0 ]; then
         log_warn "$_fail_total/$_total_run test(s) failed"
     fi
+
+    # ============================================================
+    # Per-screen D-pad audit
+    # ============================================================
+    SCREEN_TOTAL=${#SCREENS[@]}
+    if [ "$SCREEN_TOTAL" -gt 0 ]; then
+        echo ""
+        log_step "Per-Screen D-pad Audit"
+        log_info "Running audit tests on $SCREEN_TOTAL screen(s)..."
+
+        _audit_classes="${TEST_PACKAGE}.UiAuditTest ${TEST_PACKAGE}.DpadAnalysisTest ${TEST_PACKAGE}.DpadAdvancedTest"
+        _screen_idx=0
+
+        for _screen in "${SCREENS[@]}"; do
+            _screen_idx=$((_screen_idx + 1))
+            _screen_label=$(echo "$_screen" | sed 's/^\.//; s/Activity$//')
+            _full_activity="${PACKAGE_NAME}/${PACKAGE_NAME}${_screen}"
+
+            # Skip the main activity (already tested above)
+            if [ "$_screen" = "$MAIN_ACTIVITY" ]; then
+                continue
+            fi
+
+            echo ""
+            log_info "[${_screen_idx}/${SCREEN_TOTAL}] Auditing: $_screen_label"
+
+            for _audit_class in $_audit_classes; do
+                _short_audit="${_audit_class##*.}"
+
+                adb_cmd shell am instrument -w \
+                    -e targetPackage "$PACKAGE_NAME" \
+                    -e targetActivity "${PACKAGE_NAME}${_screen}" \
+                    -e class "$_audit_class" \
+                    "${TEST_PACKAGE}.test/${TEST_RUNNER}" 2>&1 \
+                | tr -d '\r' \
+                | while IFS= read -r line; do
+                    echo "$line" >> "$TEST_OUTPUT"
+
+                    case "$line" in
+                        *"INSTRUMENTATION_STATUS: stream="*)
+                            _stream="${line##*stream=}"
+                            case "$_stream" in
+                                *"[ISSUE]"*)
+                                    printf "    ${RED}%s${NC}\n" "$_stream" ;;
+                                *"[WARN]"*)
+                                    printf "    ${YELLOW}%s${NC}\n" "$_stream" ;;
+                                *"[OK]"*)
+                                    printf "    ${GREEN}%s${NC}\n" "$_stream" ;;
+                                *"[AUDIT]"*)
+                                    printf "    ${CYAN}%s${NC}\n" "$_stream" ;;
+                            esac
+                            ;;
+                        *"INSTRUMENTATION_STATUS_CODE: 0"*)
+                            ;;
+                        *"INSTRUMENTATION_STATUS_CODE: -"*)
+                            printf "    ${RED}FAIL${NC} in $_short_audit\n"
+                            ;;
+                    esac
+                done
+            done
+        done
+    fi
 else
     log_warn "Test package $TEST_PACKAGE not installed — skipping UI Automator tests"
 fi
@@ -501,7 +563,18 @@ rm -f "$AUDIT_FINDINGS"
 rm -f "$ISSUES_TMP"
 
 # ============================================================
-# Step 12: Print report to terminal
+# Step 12: Generate HTML report
+# ============================================================
+if [ -f "$SCRIPT_DIR/generate_report.sh" ]; then
+    log_step "Step 12: Generating HTML report"
+    bash "$SCRIPT_DIR/generate_report.sh" "$REPORT_FILE" "$SCREENSHOT_DIR" "${REPORTS_DIR}/report.html" "$PACKAGE_NAME" "${DEVICE_ID:-default}" "$TEST_OUTPUT"
+    if [ -f "${REPORTS_DIR}/report.html" ]; then
+        log_ok "HTML report: ${REPORTS_DIR}/report.html"
+    fi
+fi
+
+# ============================================================
+# Step 13: Print report to terminal
 # ============================================================
 log_step "TEST REPORT"
 echo ""

@@ -84,6 +84,23 @@ while IFS= read -r issue_num; do
     # ============================================================
     FIX_DESC=""
 
+    # Parse element-specific info from enriched [ISSUE] output
+    ELEMENT_ID=$(echo "$ISSUE_DESC" | grep -oP 'id:"[^"]*"' | head -1 | sed 's/id:"//;s/"//')
+    ELEMENT_TYPE=$(echo "$ISSUE_DESC" | grep -oP 'type:"[^"]*"' | head -1 | sed 's/type:"//;s/"//')
+    ELEMENT_BOUNDS=$(echo "$ISSUE_DESC" | grep -oP 'bounds:"[^"]*"' | head -1 | sed 's/bounds:"//;s/"//')
+
+    # Build element reference for fix descriptions
+    if [ -n "$ELEMENT_ID" ] && [ "$ELEMENT_ID" != "no-id" ]; then
+        ELEMENT_REF="element '$ELEMENT_ID' ($ELEMENT_TYPE)"
+        ELEMENT_XML_HINT="Find this element by its android:id=\"@+id/$(echo "$ELEMENT_ID" | sed 's/.*:id\///')\" in your layout XML."
+    elif [ -n "$ELEMENT_TYPE" ]; then
+        ELEMENT_REF="$ELEMENT_TYPE at bounds [$ELEMENT_BOUNDS]"
+        ELEMENT_XML_HINT="Locate this $ELEMENT_TYPE by its position ($ELEMENT_BOUNDS) in the layout hierarchy."
+    else
+        ELEMENT_REF=""
+        ELEMENT_XML_HINT=""
+    fi
+
     case "$ISSUE_TYPE" in
         Crash)
             if echo "$ISSUE_DESC" | grep -qi "NullPointerException"; then
@@ -98,33 +115,83 @@ while IFS= read -r issue_num; do
             ;;
         Focus)
             if echo "$ISSUE_DESC" | grep -qi "no.*focus\|has focus"; then
-                FIX_DESC="Add android:focusable=\"true\" and android:focusableInTouchMode=\"true\" to the view. Set android:nextFocusDown/Up/Left/Right for explicit focus order."
+                FIX_DESC="Add android:focusable=\"true\" and android:focusableInTouchMode=\"true\" to the view."
+                [ -n "$ELEMENT_REF" ] && FIX_DESC="$FIX_DESC Target: $ELEMENT_REF. $ELEMENT_XML_HINT"
+                FIX_DESC="$FIX_DESC Set android:nextFocusDown/Up/Left/Right for explicit focus order."
             elif echo "$ISSUE_DESC" | grep -qi "visible.*focus\|focus.*state"; then
                 FIX_DESC="Add a focused-state drawable selector: <selector> with <item android:state_focused=\"true\"> that changes background/border when focused."
+                [ -n "$ELEMENT_REF" ] && FIX_DESC="$FIX_DESC Apply to: $ELEMENT_REF. $ELEMENT_XML_HINT"
             elif echo "$ISSUE_DESC" | grep -qi "dialog\|return"; then
                 FIX_DESC="Save focused view reference before showing dialog. In dialog dismiss callback, call savedView.requestFocus() to restore focus."
             else
                 FIX_DESC="Ensure all interactive elements have android:focusable=\"true\" and a visible focus indicator drawable."
+                [ -n "$ELEMENT_REF" ] && FIX_DESC="$FIX_DESC Check: $ELEMENT_REF. $ELEMENT_XML_HINT"
             fi
             ;;
         Navigation)
-            if echo "$ISSUE_DESC" | grep -qi "tab"; then
+            if echo "$ISSUE_DESC" | grep -qi "trap\|stuck\|dead.end"; then
+                FIX_DESC="Focus trap detected."
+                [ -n "$ELEMENT_REF" ] && FIX_DESC="$FIX_DESC Trapped at $ELEMENT_REF. $ELEMENT_XML_HINT"
+                # Parse which directions are blocked from the enriched output
+                _blocked=$(echo "$ISSUE_DESC" | grep -oP 'Fix: add \K[^\]]*' | head -1)
+                if [ -n "$_blocked" ]; then
+                    FIX_DESC="$FIX_DESC Add missing attributes: $_blocked pointing to the correct neighbor views."
+                else
+                    FIX_DESC="$FIX_DESC Add nextFocusDown/Up/Left/Right attributes to connect this element to its neighbors."
+                fi
+            elif echo "$ISSUE_DESC" | grep -qi "tab"; then
                 FIX_DESC="Set android:nextFocusLeft and android:nextFocusRight on tab items to enable horizontal D-pad navigation between tabs."
             elif echo "$ISSUE_DESC" | grep -qi "unreachable\|reachable"; then
-                FIX_DESC="Add explicit nextFocusDown/Up/Left/Right attributes to ensure all focusable elements are connected in the D-pad navigation graph."
+                FIX_DESC="Unreachable elements detected. Add explicit nextFocusDown/Up/Left/Right attributes to ensure all focusable elements are connected in the D-pad navigation graph."
+                [ -n "$ELEMENT_REF" ] && FIX_DESC="$FIX_DESC Unreachable: $ELEMENT_REF. $ELEMENT_XML_HINT"
+            elif echo "$ISSUE_DESC" | grep -qi "one.way\|bidirectional\|asymmetric"; then
+                FIX_DESC="One-way navigation link detected."
+                [ -n "$ELEMENT_REF" ] && FIX_DESC="$FIX_DESC At: $ELEMENT_REF. $ELEMENT_XML_HINT"
+                FIX_DESC="$FIX_DESC Ensure both elements reference each other with matching nextFocus* attributes (e.g., A.nextFocusDown=B and B.nextFocusUp=A)."
             elif echo "$ISSUE_DESC" | grep -qi "vertical\|up.*down\|down.*up"; then
                 FIX_DESC="Set android:nextFocusUp and android:nextFocusDown on vertically arranged items. Consider using RecyclerView with proper focus handling."
+            elif echo "$ISSUE_DESC" | grep -qi "spatial\|drift\|wrong.direction"; then
+                FIX_DESC="Spatial navigation error — pressing a direction moves focus in the wrong direction."
+                [ -n "$ELEMENT_REF" ] && FIX_DESC="$FIX_DESC At: $ELEMENT_REF. $ELEMENT_XML_HINT"
+                FIX_DESC="$FIX_DESC Override nextFocus* attributes to force correct directional behavior, or fix the layout positioning so spatial navigation works naturally."
             else
                 FIX_DESC="Review the D-pad navigation order. Add nextFocus* attributes or implement custom focus search logic in onKeyDown()."
             fi
             ;;
-        UI)
-            if echo "$ISSUE_DESC" | grep -qi "dialog"; then
+        UI|"UI Audit")
+            if echo "$ISSUE_DESC" | grep -qi "small.*target\|touch.*target\|48.*dp\|48px"; then
+                FIX_DESC="Focus target too small for comfortable D-pad use."
+                [ -n "$ELEMENT_REF" ] && FIX_DESC="$FIX_DESC Element: $ELEMENT_REF. $ELEMENT_XML_HINT"
+                FIX_DESC="$FIX_DESC Add android:minWidth=\"48dp\" android:minHeight=\"48dp\" or increase padding to meet the 48dp minimum."
+            elif echo "$ISSUE_DESC" | grep -qi "overlap"; then
+                FIX_DESC="Overlapping focusable elements cause unpredictable D-pad behavior."
+                [ -n "$ELEMENT_REF" ] && FIX_DESC="$FIX_DESC Element: $ELEMENT_REF. $ELEMENT_XML_HINT"
+                FIX_DESC="$FIX_DESC Fix layout constraints to prevent overlap, or set android:focusable=\"false\" on the decorative/background element."
+            elif echo "$ISSUE_DESC" | grep -qi "response.*time\|slow\|latency"; then
+                FIX_DESC="Slow response to D-pad input (>500ms). Move heavy work off the UI thread. Use View.post{} or coroutines for deferred updates."
+            elif echo "$ISSUE_DESC" | grep -qi "truncat"; then
+                FIX_DESC="Text truncation detected."
+                [ -n "$ELEMENT_REF" ] && FIX_DESC="$FIX_DESC Element: $ELEMENT_REF. $ELEMENT_XML_HINT"
+                FIX_DESC="$FIX_DESC Use android:ellipsize=\"end\" with android:maxLines, or increase the container width. For TV, ensure text is readable at 10-foot distance."
+            elif echo "$ISSUE_DESC" | grep -qi "zero.size\|0x0\|invisible"; then
+                FIX_DESC="Zero-size or invisible focusable element detected."
+                [ -n "$ELEMENT_REF" ] && FIX_DESC="$FIX_DESC Element: $ELEMENT_REF. $ELEMENT_XML_HINT"
+                FIX_DESC="$FIX_DESC Either give the element proper dimensions or set android:focusable=\"false\" if it shouldn't receive focus."
+            elif echo "$ISSUE_DESC" | grep -qi "content.desc\|accessibility\|label"; then
+                FIX_DESC="Missing accessibility label."
+                [ -n "$ELEMENT_REF" ] && FIX_DESC="$FIX_DESC Element: $ELEMENT_REF. $ELEMENT_XML_HINT"
+                FIX_DESC="$FIX_DESC Add android:contentDescription=\"descriptive text\" for screen reader support."
+            elif echo "$ISSUE_DESC" | grep -qi "dialog"; then
                 FIX_DESC="Ensure the dialog handles the BACK key correctly by setting dialog.setCancelable(true) or overriding onBackPressed()."
             elif echo "$ISSUE_DESC" | grep -qi "number\|numeric\|input"; then
                 FIX_DESC="Set android:inputType=\"number\" on the input field and handle KEYCODE_0 through KEYCODE_9 in onKeyDown() or via an InputFilter."
+            elif echo "$ISSUE_DESC" | grep -qi "rotation\|orientation"; then
+                FIX_DESC="Focus lost after screen rotation. Save focus state in onSaveInstanceState() and restore in onRestoreInstanceState() using the view ID."
+            elif echo "$ISSUE_DESC" | grep -qi "scroll.*position\|scroll.*restor"; then
+                FIX_DESC="Scroll position not preserved. Save scroll position in onSaveInstanceState() and restore it. For RecyclerView, use layoutManager.onSaveInstanceState()/onRestoreInstanceState()."
             else
                 FIX_DESC="Review the UI element behavior. Ensure proper event handling and state management for D-pad interaction."
+                [ -n "$ELEMENT_REF" ] && FIX_DESC="$FIX_DESC Check: $ELEMENT_REF. $ELEMENT_XML_HINT"
             fi
             ;;
         Visual)
@@ -132,6 +199,7 @@ while IFS= read -r issue_num; do
             ;;
         *)
             FIX_DESC="Review the issue details and apply an appropriate fix."
+            [ -n "$ELEMENT_REF" ] && FIX_DESC="$FIX_DESC Related element: $ELEMENT_REF. $ELEMENT_XML_HINT"
             ;;
     esac
 

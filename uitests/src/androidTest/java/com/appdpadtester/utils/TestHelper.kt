@@ -1,5 +1,6 @@
 package com.appdpadtester.utils
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Rect
@@ -30,6 +31,17 @@ object TestHelper {
             .getString("targetPackage", "com.example.megalife.f1")
     }
 
+    /** Optional: specific activity to launch (for per-screen auditing). */
+    val targetActivity: String? by lazy {
+        InstrumentationRegistry.getArguments()
+            .getString("targetActivity", null)
+    }
+
+    /** Screen label for per-screen audit output prefixing. */
+    val screenLabel: String by lazy {
+        targetActivity?.substringAfterLast('.')?.removeSuffix("Activity") ?: "Main"
+    }
+
     private val context: Context
         get() = InstrumentationRegistry.getInstrumentation().targetContext
 
@@ -37,6 +49,8 @@ object TestHelper {
 
     /**
      * Launches the target app and waits for it to appear.
+     * If targetActivity is set via instrumentation args, launches that
+     * specific activity instead of the default launcher intent.
      * @return true if app launched successfully
      */
     fun launchApp(device: UiDevice, packageName: String = targetPackage): Boolean {
@@ -44,12 +58,35 @@ object TestHelper {
         device.pressHome()
         device.wait(Until.hasObject(By.pkg(launcherPackage).depth(0)), 3000)
 
+        val activity = targetActivity
+        if (activity != null) {
+            return launchActivity(device, activity, packageName)
+        }
+
         val intent = context.packageManager.getLaunchIntentForPackage(packageName)
             ?: return false
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
 
         return device.wait(Until.hasObject(By.pkg(packageName).depth(0)), 5000) ?: false
+    }
+
+    /**
+     * Launches a specific activity by its fully-qualified class name.
+     * @param activityName fully-qualified name (e.g. "com.example.app.SettingsActivity")
+     * @return true if activity launched successfully
+     */
+    fun launchActivity(device: UiDevice, activityName: String, packageName: String = targetPackage): Boolean {
+        val intent = Intent(Intent.ACTION_MAIN).apply {
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
+            component = ComponentName(packageName, activityName)
+        }
+        return try {
+            context.startActivity(intent)
+            device.wait(Until.hasObject(By.pkg(packageName).depth(0)), 5000) ?: false
+        } catch (e: Exception) {
+            false
+        }
     }
 
     // ---- D-pad Key Simulation ----
@@ -87,6 +124,12 @@ object TestHelper {
     fun pressCenter(device: UiDevice, settleMs: Long = 500) =
         pressKey(device, KeyEvent.KEYCODE_DPAD_CENTER, settleMs)
 
+    /** Long-press D-pad Center via shell command. */
+    fun pressLongCenter(device: UiDevice, holdMs: Long = 1500) {
+        device.executeShellCommand("input keyevent --longpress ${KeyEvent.KEYCODE_DPAD_CENTER}")
+        device.waitForIdle(holdMs)
+    }
+
     /** Press Back key. */
     fun pressBack(device: UiDevice, settleMs: Long = 500) {
         device.pressBack()
@@ -99,6 +142,34 @@ object TestHelper {
         val keyCode = KeyEvent.KEYCODE_0 + digit
         pressKey(device, keyCode, settleMs)
     }
+
+    /** Press Channel Up key (TV remote). */
+    fun pressChannelUp(device: UiDevice, settleMs: Long = 500) =
+        pressKey(device, KeyEvent.KEYCODE_CHANNEL_UP, settleMs)
+
+    /** Press Channel Down key (TV remote). */
+    fun pressChannelDown(device: UiDevice, settleMs: Long = 500) =
+        pressKey(device, KeyEvent.KEYCODE_CHANNEL_DOWN, settleMs)
+
+    /** Press Media Play/Pause key. */
+    fun pressMediaPlayPause(device: UiDevice, settleMs: Long = 500) =
+        pressKey(device, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, settleMs)
+
+    /** Press Media Stop key. */
+    fun pressMediaStop(device: UiDevice, settleMs: Long = 500) =
+        pressKey(device, KeyEvent.KEYCODE_MEDIA_STOP, settleMs)
+
+    /** Press Media Rewind key. */
+    fun pressMediaRewind(device: UiDevice, settleMs: Long = 500) =
+        pressKey(device, KeyEvent.KEYCODE_MEDIA_REWIND, settleMs)
+
+    /** Press Media Fast Forward key. */
+    fun pressMediaFastForward(device: UiDevice, settleMs: Long = 500) =
+        pressKey(device, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, settleMs)
+
+    /** Press Menu key. */
+    fun pressMenu(device: UiDevice, settleMs: Long = 500) =
+        pressKey(device, KeyEvent.KEYCODE_MENU, settleMs)
 
     // ---- Focus Tracking ----
 
@@ -131,6 +202,29 @@ object TestHelper {
         return getFocusedElement(device)?.visibleBounds
     }
 
+    /**
+     * Returns a short human-readable label for the focused element.
+     */
+    fun getFocusedLabel(device: UiDevice): String {
+        val el = getFocusedElement(device) ?: return "(none)"
+        return el.text?.take(20)
+            ?: el.contentDescription?.take(20)
+            ?: el.resourceName?.substringAfterLast('/')
+            ?: el.className?.substringAfterLast('.')
+            ?: "?"
+    }
+
+    /**
+     * Returns structured info about an element for rich diagnostic output.
+     * Format: {id:"resId", type:"ClassName", bounds:"l,t,r,b"}
+     */
+    fun elementInfo(el: UiObject2): String {
+        val id = el.resourceName ?: "no-id"
+        val type = el.className?.substringAfterLast('.') ?: "?"
+        val b = el.visibleBounds
+        return "{id:\"$id\", type:\"$type\", bounds:\"${b.left},${b.top},${b.right},${b.bottom}\"}"
+    }
+
     // ---- Element Discovery ----
 
     /**
@@ -146,6 +240,41 @@ object TestHelper {
      */
     fun getAllClickableElements(device: UiDevice): List<UiObject2> {
         return device.findObjects(By.clickable(true)) ?: emptyList()
+    }
+
+    /**
+     * Returns all scrollable containers on screen.
+     */
+    fun getScrollableContainers(device: UiDevice): List<UiObject2> {
+        return device.findObjects(By.scrollable(true)) ?: emptyList()
+    }
+
+    /**
+     * Detects grid-like layouts by finding elements that share the same Y
+     * position (within tolerance) but have different X positions.
+     * Returns groups of elements that form rows.
+     */
+    fun detectGridLayout(device: UiDevice, yTolerance: Int = 20): List<List<UiObject2>> {
+        val focusable = getAllFocusableElements(device)
+        if (focusable.size < 4) return emptyList()
+
+        // Group by approximate Y center
+        val rows = mutableMapOf<Int, MutableList<UiObject2>>()
+        for (el in focusable) {
+            val cy = el.visibleBounds.centerY()
+            // Find existing row within tolerance
+            val matchingRow = rows.keys.firstOrNull { Math.abs(it - cy) <= yTolerance }
+            if (matchingRow != null) {
+                rows[matchingRow]!!.add(el)
+            } else {
+                rows[cy] = mutableListOf(el)
+            }
+        }
+
+        // Return only rows with 2+ elements (these form a grid)
+        return rows.values
+            .filter { it.size >= 2 }
+            .map { row -> row.sortedBy { it.visibleBounds.left } }
     }
 
     /**
@@ -226,5 +355,15 @@ object TestHelper {
      */
     fun isAppInForeground(device: UiDevice, packageName: String = targetPackage): Boolean {
         return device.currentPackageName == packageName
+    }
+
+    // ---- Output Helpers ----
+
+    /**
+     * Returns the screen prefix for per-screen audit output.
+     * Empty string when testing the default launch screen.
+     */
+    fun screenPrefix(): String {
+        return if (targetActivity != null) "[SCREEN:${screenLabel}] " else ""
     }
 }

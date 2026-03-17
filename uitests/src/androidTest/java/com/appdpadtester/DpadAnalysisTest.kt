@@ -29,6 +29,11 @@ class DpadAnalysisTest {
     private lateinit var device: UiDevice
     private var screenW = 0
     private var screenH = 0
+    private val p by lazy { TestHelper.screenPrefix() }
+
+    // Navigation graph: tracks (fromLabel -> direction -> toLabel) for ASCII map
+    private val navEdges = mutableListOf<Triple<String, String, String>>()
+    private val navNodes = mutableMapOf<String, Pair<Int, Int>>() // label -> (x, y)
 
     @Before
     fun setUp() {
@@ -47,8 +52,8 @@ class DpadAnalysisTest {
 
     @Test
     fun analyze_focusChains() {
-        println("[AUDIT] === Focus Chain Map ===")
-        println("[AUDIT] Mapping the exact sequence of elements reached in each direction")
+        println("${p}[AUDIT] === Focus Chain Map ===")
+        println("${p}[AUDIT] Mapping the exact sequence of elements reached in each direction")
 
         data class FocusNode(
             val id: String,
@@ -62,7 +67,7 @@ class DpadAnalysisTest {
             val b = el.visibleBounds
             return FocusNode(
                 id = el.resourceName ?: "${el.className}@${b.left},${b.top}",
-                label = el.text ?: el.contentDescription ?: "(unlabeled)",
+                label = el.text ?: el.contentDescription ?: el.resourceName?.substringAfterLast('/') ?: "(unlabeled)",
                 bounds = b,
                 className = el.className?.substringAfterLast('.') ?: "?"
             )
@@ -87,10 +92,11 @@ class DpadAnalysisTest {
             var stuckCount = 0
 
             for (step in 1..25) {
+                val prevNode = chain.lastOrNull()
                 TestHelper.pressKey(device, keyCode, 250)
                 val current = captureCurrent()
                 if (current == null) {
-                    println("[ISSUE] Focus LOST at step $step pressing $name")
+                    println("${p}[ISSUE] Focus LOST at step $step pressing $name")
                     break
                 }
 
@@ -100,23 +106,122 @@ class DpadAnalysisTest {
                 } else {
                     stuckCount = 0
                     chain.add(current)
+                    // Record edge for navigation map
+                    if (prevNode != null) {
+                        val fromLabel = prevNode.label.take(15)
+                        val toLabel = current.label.take(15)
+                        navEdges.add(Triple(fromLabel, name, toLabel))
+                        navNodes[fromLabel] = Pair(prevNode.bounds.centerX(), prevNode.bounds.centerY())
+                        navNodes[toLabel] = Pair(current.bounds.centerX(), current.bounds.centerY())
+                    }
                 }
             }
 
-            println("[AUDIT] $arrow $name chain (${chain.size} elements):")
+            println("${p}[AUDIT] $arrow $name chain (${chain.size} elements):")
             for ((i, node) in chain.withIndex()) {
-                val pos = "(${node.bounds.centerX()}, ${node.bounds.centerY()})"
-                println("[AUDIT]   ${i + 1}. ${node.className} '${node.label.take(25)}' $pos")
+                val info = "{id:\"${node.id.substringBefore('|')}\", type:\"${node.className}\", bounds:\"${node.bounds.left},${node.bounds.top},${node.bounds.right},${node.bounds.bottom}\"}"
+                println("${p}[AUDIT]   ${i + 1}. $info '${node.label.take(25)}'")
             }
 
             if (chain.size <= 1) {
-                println("[WARN] $name navigation reaches only ${chain.size} element — nothing to navigate to")
+                println("${p}[WARN] $name navigation reaches only ${chain.size} element — nothing to navigate to")
             } else if (stuckCount >= 3) {
-                println("[OK] $name chain ends at boundary (${chain.size} elements)")
+                println("${p}[OK] $name chain ends at boundary (${chain.size} elements)")
             }
         }
 
+        // Build ASCII navigation map
+        printNavigationMap()
+
         TestHelper.takeScreenshot(device, "dpad_chain_map")
+    }
+
+    /**
+     * Builds and prints an ASCII navigation map from collected edges.
+     * Shows elements as boxes connected by arrows.
+     */
+    private fun printNavigationMap() {
+        if (navNodes.isEmpty()) return
+
+        println("${p}[AUDIT] ")
+        println("${p}[AUDIT] NAVIGATION MAP:")
+
+        // Sort nodes into a grid by Y then X
+        val sortedNodes = navNodes.entries.sortedWith(compareBy({ it.value.second / (screenH / 4) }, { it.value.first }))
+
+        // Group into rows by approximate Y position
+        val rows = mutableListOf<MutableList<String>>()
+        var currentRowY = -1
+        val rowThreshold = screenH / 4
+
+        for ((label, pos) in sortedNodes) {
+            val rowBucket = pos.second / rowThreshold
+            if (rowBucket != currentRowY) {
+                currentRowY = rowBucket
+                rows.add(mutableListOf())
+            }
+            rows.last().add(label)
+        }
+
+        // Build edge lookup
+        val rightEdges = mutableSetOf<Pair<String, String>>()
+        val downEdges = mutableSetOf<Pair<String, String>>()
+        for ((from, dir, to) in navEdges) {
+            when (dir) {
+                "RIGHT" -> rightEdges.add(Pair(from, to))
+                "DOWN" -> downEdges.add(Pair(from, to))
+            }
+        }
+
+        // Print each row
+        for ((rowIdx, row) in rows.withIndex()) {
+            val line = StringBuilder("${p}[AUDIT]   ")
+            for ((colIdx, label) in row.withIndex()) {
+                val display = "[${label.take(12)}]"
+                line.append(display)
+                // Check if there's a right-edge to the next element
+                if (colIdx < row.size - 1) {
+                    val nextLabel = row[colIdx + 1]
+                    val hasRight = rightEdges.any { it.first == label && it.second == nextLabel }
+                    val hasLeft = rightEdges.any { it.first == nextLabel && it.second == label }
+                    line.append(when {
+                        hasRight && hasLeft -> " ↔ "
+                        hasRight -> " → "
+                        hasLeft -> " ← "
+                        else -> "   "
+                    })
+                }
+            }
+            println(line.toString())
+
+            // Print down arrows between rows
+            if (rowIdx < rows.size - 1) {
+                val arrowLine = StringBuilder("${p}[AUDIT]   ")
+                for (label in row) {
+                    val nextRow = rows[rowIdx + 1]
+                    val hasDown = nextRow.any { target ->
+                        downEdges.any { it.first == label && it.second == target }
+                    }
+                    val hasUp = nextRow.any { target ->
+                        downEdges.any { it.first == target && it.second == label }
+                    }
+                    val pad = label.take(12).length + 2 // account for [ ]
+                    val arrow = when {
+                        hasDown && hasUp -> "↕"
+                        hasDown -> "↓"
+                        hasUp -> "↑"
+                        else -> " "
+                    }
+                    val leftPad = pad / 2
+                    arrowLine.append(" ".repeat(leftPad))
+                    arrowLine.append(arrow)
+                    arrowLine.append(" ".repeat(pad - leftPad - 1))
+                    arrowLine.append("   ") // gap between columns
+                }
+                println(arrowLine.toString())
+            }
+        }
+        println("${p}[AUDIT] ")
     }
 
     // ================================================================
@@ -125,8 +230,8 @@ class DpadAnalysisTest {
 
     @Test
     fun analyze_spatialCorrectness() {
-        println("[AUDIT] === Spatial Correctness Analysis ===")
-        println("[AUDIT] Checks if D-pad directions move focus in the correct spatial direction")
+        println("${p}[AUDIT] === Spatial Correctness Analysis ===")
+        println("${p}[AUDIT] Checks if D-pad directions move focus in the correct spatial direction")
 
         data class MoveResult(
             val direction: String,
@@ -197,23 +302,23 @@ class DpadAnalysisTest {
             val total = dirMoves.size
             val pct = if (total > 0) correct * 100 / total else 100
             if (pct == 100) {
-                println("[OK] $dir: all $total moves spatially correct")
+                println("${p}[OK] $dir: all $total moves spatially correct")
             } else {
-                println("[WARN] $dir: $correct/$total moves spatially correct ($pct%)")
+                println("${p}[WARN] $dir: $correct/$total moves spatially correct ($pct%)")
                 for (m in dirMoves.filter { !it.correct }.take(3)) {
-                    println("[WARN]   Moved from (${m.fromX},${m.fromY}) to (${m.toX},${m.toY}) — wrong direction")
+                    println("${p}[WARN]   Moved from (${m.fromX},${m.fromY}) to (${m.toX},${m.toY}) — wrong direction")
                 }
             }
         }
 
         val totalMoves = moves.size
         val totalCorrect = moves.count { it.correct }
-        println("[AUDIT] Overall spatial accuracy: $totalCorrect/$totalMoves moves correct")
+        println("${p}[AUDIT] Overall spatial accuracy: $totalCorrect/$totalMoves moves correct")
 
         if (wrongDirectionCount == 0) {
-            println("[OK] All D-pad movements go in the expected spatial direction")
+            println("${p}[OK] All D-pad movements go in the expected spatial direction")
         } else {
-            println("[ISSUE] $wrongDirectionCount D-pad moves went in the wrong spatial direction — check nextFocus attributes or layout order")
+            println("${p}[ISSUE] $wrongDirectionCount D-pad moves went in the wrong spatial direction — check nextFocus attributes or layout order")
         }
     }
 
@@ -223,8 +328,8 @@ class DpadAnalysisTest {
 
     @Test
     fun analyze_focusTraps() {
-        println("[AUDIT] === Focus Trap & Dead Zone Detection ===")
-        println("[AUDIT] Looking for elements where D-pad gets stuck or lost")
+        println("${p}[AUDIT] === Focus Trap & Dead Zone Detection ===")
+        println("${p}[AUDIT] Looking for elements where D-pad gets stuck or lost")
 
         data class TrapInfo(
             val elementId: String,
@@ -314,15 +419,16 @@ class DpadAnalysisTest {
             val stuckDirs = trap.blockedDirections.filter { !it.endsWith("(LOST)") }
 
             if (lostDirs.isNotEmpty()) {
-                println("[ISSUE] FOCUS LOST from '${trap.label.take(25)}' ${trap.position} pressing: ${lostDirs.joinToString(", ")}")
+                println("${p}[ISSUE] FOCUS LOST from '${trap.label.take(25)}' ${trap.position} pressing: ${lostDirs.joinToString(", ")}")
             }
 
             if (trap.blockedDirections.size >= 4) {
                 fullTraps++
-                println("[ISSUE] FULL TRAP: '${trap.label.take(25)}' ${trap.position} — blocked in ALL directions")
+                println("${p}[ISSUE] FULL TRAP: {id:\"${trap.elementId}\", pos:${trap.position}} '${trap.label.take(25)}' — blocked in ALL directions. Fix: add nextFocusUp/Down/Left/Right attributes")
             } else if (stuckDirs.size >= 2) {
                 partialTraps++
-                println("[WARN] Partial dead zone: '${trap.label.take(25)}' ${trap.position} — blocked: ${stuckDirs.joinToString(", ")}")
+                val fixes = stuckDirs.map { dir -> "nextFocus$dir" }.joinToString(", ")
+                println("${p}[WARN] Partial dead zone: {id:\"${trap.elementId}\", pos:${trap.position}} '${trap.label.take(25)}' — blocked: ${stuckDirs.joinToString(", ")}. Fix: add $fixes")
             } else if (stuckDirs.size == 1) {
                 // Single blocked direction at boundary is normal
                 val isBoundary = when (stuckDirs[0]) {
@@ -331,18 +437,18 @@ class DpadAnalysisTest {
                     else -> false
                 }
                 if (!isBoundary) {
-                    println("[AUDIT] '${trap.label.take(25)}' ${trap.position}: ${stuckDirs[0]} blocked (may be boundary)")
+                    println("${p}[AUDIT] '${trap.label.take(25)}' ${trap.position}: ${stuckDirs[0]} blocked (may be boundary)")
                 }
             }
         }
 
-        println("[AUDIT] Tested ${visited.size} unique elements")
-        println("[AUDIT] Full traps: $fullTraps, Partial dead zones: $partialTraps")
+        println("${p}[AUDIT] Tested ${visited.size} unique elements")
+        println("${p}[AUDIT] Full traps: $fullTraps, Partial dead zones: $partialTraps")
 
         if (fullTraps == 0 && partialTraps == 0) {
-            println("[OK] No focus traps or dead zones detected")
+            println("${p}[OK] No focus traps or dead zones detected")
         } else if (fullTraps > 0) {
-            println("[ISSUE] $fullTraps element(s) trap focus completely — user gets stuck with no way out")
+            println("${p}[ISSUE] $fullTraps element(s) trap focus completely — user gets stuck with no way out")
         }
     }
 
@@ -352,8 +458,8 @@ class DpadAnalysisTest {
 
     @Test
     fun analyze_wrappingBehavior() {
-        println("[AUDIT] === Wrapping Behavior Analysis ===")
-        println("[AUDIT] Checks whether D-pad wraps around at list/grid boundaries")
+        println("${p}[AUDIT] === Wrapping Behavior Analysis ===")
+        println("${p}[AUDIT] Checks whether D-pad wraps around at list/grid boundaries")
 
         val directions = listOf(
             Pair(KeyEvent.KEYCODE_DPAD_DOWN, "DOWN"),
@@ -387,7 +493,7 @@ class DpadAnalysisTest {
             }
 
             if (boundaryId == null) {
-                println("[AUDIT] $name: no clear boundary found (focus may wrap or screen scrolls indefinitely)")
+                println("${p}[AUDIT] $name: no clear boundary found (focus may wrap or screen scrolls indefinitely)")
                 continue
             }
 
@@ -412,12 +518,12 @@ class DpadAnalysisTest {
                     else -> false
                 }
                 if (wentOpposite) {
-                    println("[OK] $name wraps around at boundary '${boundaryLabel.take(20)}' — good for continuous navigation")
+                    println("${p}[OK] $name wraps around at boundary '${boundaryLabel.take(20)}' — good for continuous navigation")
                 } else {
-                    println("[AUDIT] $name: focus moved from boundary but did not wrap to opposite side (may jump to adjacent section)")
+                    println("${p}[AUDIT] $name: focus moved from boundary but did not wrap to opposite side (may jump to adjacent section)")
                 }
             } else {
-                println("[AUDIT] $name: stops at boundary '${boundaryLabel.take(20)}' — no wrapping")
+                println("${p}[AUDIT] $name: stops at boundary '${boundaryLabel.take(20)}' — no wrapping")
             }
         }
     }
@@ -428,8 +534,8 @@ class DpadAnalysisTest {
 
     @Test
     fun analyze_bidirectionalConsistency() {
-        println("[AUDIT] === Bidirectional Consistency ===")
-        println("[AUDIT] Checks if pressing opposite directions returns to the same element")
+        println("${p}[AUDIT] === Bidirectional Consistency ===")
+        println("${p}[AUDIT] Checks if pressing opposite directions returns to the same element")
 
         var consistentPairs = 0
         var inconsistentPairs = 0
@@ -489,13 +595,13 @@ class DpadAnalysisTest {
 
         val total = consistentPairs + inconsistentPairs
         val pct = if (total > 0) consistentPairs * 100 / total else 100
-        println("[AUDIT] Bidirectional consistency: $consistentPairs/$total pairs ($pct%)")
+        println("${p}[AUDIT] Bidirectional consistency: $consistentPairs/$total pairs ($pct%)")
 
         for (inc in inconsistencies.take(5)) {
-            println("[WARN] $inc")
+            println("${p}[WARN] $inc")
         }
         if (inconsistencies.size > 5) {
-            println("[WARN] ... and ${inconsistencies.size - 5} more inconsistencies")
+            println("${p}[WARN] ... and ${inconsistencies.size - 5} more inconsistencies")
         }
 
         when {
@@ -512,8 +618,8 @@ class DpadAnalysisTest {
 
     @Test
     fun analyze_crossAxisDrift() {
-        println("[AUDIT] === Cross-Axis Focus Drift ===")
-        println("[AUDIT] Checks if vertical navigation causes unexpected horizontal drift (and vice versa)")
+        println("${p}[AUDIT] === Cross-Axis Focus Drift ===")
+        println("${p}[AUDIT] Checks if vertical navigation causes unexpected horizontal drift (and vice versa)")
 
         // Test: press DOWN 10 times and check horizontal drift
         TestHelper.launchApp(device)
@@ -521,7 +627,7 @@ class DpadAnalysisTest {
 
         val startBounds = TestHelper.getFocusedBounds(device)
         if (startBounds == null) {
-            println("[ISSUE] No initial focus — cannot analyze drift")
+            println("${p}[ISSUE] No initial focus — cannot analyze drift")
             return
         }
 
@@ -541,18 +647,18 @@ class DpadAnalysisTest {
             }
         }
 
-        println("[AUDIT] Vertical navigation (DOWN x15):")
-        println("[AUDIT]   Starting X: $startX")
-        println("[AUDIT]   Max horizontal drift: ${maxHorizontalDrift}px (${maxHorizontalDrift * 100 / maxOf(screenW, 1)}% of screen width)")
+        println("${p}[AUDIT] Vertical navigation (DOWN x15):")
+        println("${p}[AUDIT]   Starting X: $startX")
+        println("${p}[AUDIT]   Max horizontal drift: ${maxHorizontalDrift}px (${maxHorizontalDrift * 100 / maxOf(screenW, 1)}% of screen width)")
 
         if (driftSteps.isEmpty()) {
-            println("[OK] No significant horizontal drift during vertical navigation")
+            println("${p}[OK] No significant horizontal drift during vertical navigation")
         } else {
-            println("[WARN] Horizontal drift during vertical navigation at ${driftSteps.size} step(s):")
+            println("${p}[WARN] Horizontal drift during vertical navigation at ${driftSteps.size} step(s):")
             for ((step, drift) in driftSteps.take(3)) {
-                println("[WARN]   Step $step: ${drift}px drift from starting position")
+                println("${p}[WARN]   Step $step: ${drift}px drift from starting position")
             }
-            println("[WARN] This can confuse users — focus should stay in the same column when pressing UP/DOWN")
+            println("${p}[WARN] This can confuse users — focus should stay in the same column when pressing UP/DOWN")
         }
 
         // Test: press RIGHT 10 times and check vertical drift
@@ -576,15 +682,15 @@ class DpadAnalysisTest {
             }
         }
 
-        println("[AUDIT] Horizontal navigation (RIGHT x15):")
-        println("[AUDIT]   Starting Y: $startY")
-        println("[AUDIT]   Max vertical drift: ${maxVerticalDrift}px (${maxVerticalDrift * 100 / maxOf(screenH, 1)}% of screen height)")
+        println("${p}[AUDIT] Horizontal navigation (RIGHT x15):")
+        println("${p}[AUDIT]   Starting Y: $startY")
+        println("${p}[AUDIT]   Max vertical drift: ${maxVerticalDrift}px (${maxVerticalDrift * 100 / maxOf(screenH, 1)}% of screen height)")
 
         if (vDriftSteps.isEmpty()) {
-            println("[OK] No significant vertical drift during horizontal navigation")
+            println("${p}[OK] No significant vertical drift during horizontal navigation")
         } else {
-            println("[WARN] Vertical drift during horizontal navigation at ${vDriftSteps.size} step(s)")
-            println("[WARN] Focus should stay in the same row when pressing LEFT/RIGHT")
+            println("${p}[WARN] Vertical drift during horizontal navigation at ${vDriftSteps.size} step(s)")
+            println("${p}[WARN] Focus should stay in the same row when pressing LEFT/RIGHT")
         }
     }
 
@@ -594,7 +700,7 @@ class DpadAnalysisTest {
 
     @Test
     fun analyze_centerButtonBehavior() {
-        println("[AUDIT] === Center/OK Button Behavior Analysis ===")
+        println("${p}[AUDIT] === Center/OK Button Behavior Analysis ===")
 
         TestHelper.launchApp(device)
         TestHelper.waitForIdle(device, 2000)
@@ -632,15 +738,25 @@ class DpadAnalysisTest {
             when {
                 packageAfter != packageBefore -> {
                     hadEffect = true
-                    effectType = "launched new app/activity"
+                    effectType = "navigated to different app/activity ($packageAfter)"
                 }
                 hierarchyBefore != hierarchyAfter -> {
                     hadEffect = true
-                    effectType = "changed UI (dialog/screen/selection)"
+                    // Try to classify the change
+                    val newDialogs = hierarchyAfter.contains("android:id/alertTitle") ||
+                        hierarchyAfter.contains("android:id/message") ||
+                        (hierarchyAfter.contains("Dialog") && !hierarchyBefore.contains("Dialog"))
+                    val focusChanged = TestHelper.getFocusedElementId(device) != (focused.resourceName ?: "")
+                    effectType = when {
+                        newDialogs -> "opened dialog"
+                        hierarchyAfter.length > hierarchyBefore.length + 500 -> "navigated to new screen"
+                        focusChanged -> "toggled selection/changed focus"
+                        else -> "changed UI state"
+                    }
                 }
                 else -> {
                     hadEffect = false
-                    effectType = "no visible effect"
+                    effectType = "no handler (element ${if (isClickable) "is" else "NOT"} clickable)"
                 }
             }
 
@@ -660,26 +776,26 @@ class DpadAnalysisTest {
             TestHelper.pressDown(device, 300)
         }
 
-        println("[AUDIT] Center/OK results for ${results.size} elements:")
+        println("${p}[AUDIT] Center/OK results for ${results.size} elements:")
         for (r in results) {
             val tag = when {
                 r.hadEffect -> "[OK]"
                 else -> "[WARN]"
             }
             val clickableNote = ""
-            println("$tag '${r.elementLabel}' (${r.elementType}): ${r.effectType} [${r.responseMs}ms]")
+            println("${p}$tag '${r.elementLabel}' (${r.elementType}): ${r.effectType} [${r.responseMs}ms]")
         }
 
         val actionable = results.count { it.hadEffect }
         val noEffect = results.count { !it.hadEffect }
-        println("[AUDIT] ${actionable}/${results.size} elements responded to Center press")
+        println("${p}[AUDIT] ${actionable}/${results.size} elements responded to Center press")
 
         if (noEffect > actionable && results.size > 2) {
-            println("[WARN] More than half of tested elements don't respond to Center/OK — check click listeners")
+            println("${p}[WARN] More than half of tested elements don't respond to Center/OK — check click listeners")
         }
 
         val avgResponse = if (results.isNotEmpty()) results.map { it.responseMs }.average() else 0.0
-        println("[AUDIT] Average Center response time: ${avgResponse.toInt()}ms")
+        println("${p}[AUDIT] Average Center response time: ${avgResponse.toInt()}ms")
     }
 
     // ================================================================
@@ -688,7 +804,7 @@ class DpadAnalysisTest {
 
     @Test
     fun analyze_backKeyBehavior() {
-        println("[AUDIT] === Back Key Behavior Analysis ===")
+        println("${p}[AUDIT] === Back Key Behavior Analysis ===")
 
         TestHelper.launchApp(device)
         TestHelper.waitForIdle(device, 2000)
@@ -710,15 +826,15 @@ class DpadAnalysisTest {
             if (currentHierarchy != (if (depth.size > 0) launchHierarchy else "")) {
                 depth.add("Level $level")
                 val hasFocus = TestHelper.getFocusedElement(device) != null
-                println("[AUDIT] Navigated to depth $level — focus present: $hasFocus")
+                println("${p}[AUDIT] Navigated to depth $level — focus present: $hasFocus")
             } else {
-                println("[AUDIT] Center press at depth $level had no effect — stopping descent")
+                println("${p}[AUDIT] Center press at depth $level had no effect — stopping descent")
                 break
             }
         }
 
         // Now unwind with Back
-        println("[AUDIT] Unwinding ${depth.size - 1} levels with Back key:")
+        println("${p}[AUDIT] Unwinding ${depth.size - 1} levels with Back key:")
         for (level in depth.size - 1 downTo 1) {
             val beforeBack = TestHelper.dumpHierarchy(device)
             TestHelper.pressBack(device)
@@ -729,23 +845,23 @@ class DpadAnalysisTest {
             val isInApp = TestHelper.isAppInForeground(device)
 
             if (!isInApp) {
-                println("[ISSUE] Back key EXITED the app at depth $level — should return to previous screen instead")
+                println("${p}[ISSUE] Back key EXITED the app at depth $level — should return to previous screen instead")
                 TestHelper.launchApp(device)
                 TestHelper.waitForIdle(device, 2000)
                 break
             }
 
             if (beforeBack == afterBack) {
-                println("[WARN] Back key at depth $level had no visible effect")
+                println("${p}[WARN] Back key at depth $level had no visible effect")
             } else if (hasFocus) {
-                println("[OK] Back from depth $level: screen changed, focus present")
+                println("${p}[OK] Back from depth $level: screen changed, focus present")
             } else {
-                println("[ISSUE] Back from depth $level: screen changed but FOCUS LOST")
+                println("${p}[ISSUE] Back from depth $level: screen changed but FOCUS LOST")
             }
         }
 
         // Test Back on main screen
-        println("[AUDIT] Testing Back on main screen:")
+        println("${p}[AUDIT] Testing Back on main screen:")
         TestHelper.launchApp(device)
         TestHelper.waitForIdle(device, 2000)
 
@@ -753,9 +869,9 @@ class DpadAnalysisTest {
         TestHelper.waitForIdle(device, 1500)
 
         if (TestHelper.isAppInForeground(device)) {
-            println("[OK] Back on main screen keeps app in foreground (good — may show 'press again to exit')")
+            println("${p}[OK] Back on main screen keeps app in foreground (good — may show 'press again to exit')")
         } else {
-            println("[AUDIT] Back on main screen exits app (standard Android behavior)")
+            println("${p}[AUDIT] Back on main screen exits app (standard Android behavior)")
         }
     }
 
@@ -765,7 +881,7 @@ class DpadAnalysisTest {
 
     @Test
     fun analyze_scrollBehavior() {
-        println("[AUDIT] === Scroll Navigation Analysis ===")
+        println("${p}[AUDIT] === Scroll Navigation Analysis ===")
 
         TestHelper.launchApp(device)
         TestHelper.waitForIdle(device, 2000)
@@ -790,7 +906,7 @@ class DpadAnalysisTest {
                 if (prev > screenH * 0.7 && curr < prev - 100) {
                     if (!scrollDetected) {
                         scrollDetected = true
-                        println("[AUDIT] Scroll detected at step $step: focus Y went from $prev to $curr")
+                        println("${p}[AUDIT] Scroll detected at step $step: focus Y went from $prev to $curr")
                     }
                 }
             }
@@ -805,22 +921,22 @@ class DpadAnalysisTest {
         val maxY = yPositions.maxOrNull() ?: 0
         val range = maxY - minY
 
-        println("[AUDIT] Focus Y range during DOWN x40: ${minY}px to ${maxY}px (range: ${range}px)")
+        println("${p}[AUDIT] Focus Y range during DOWN x40: ${minY}px to ${maxY}px (range: ${range}px)")
 
         if (range < screenH / 2) {
-            println("[AUDIT] Focus stays within a small vertical range — content may be scrolling behind the focus (good pattern for TV)")
+            println("${p}[AUDIT] Focus stays within a small vertical range — content may be scrolling behind the focus (good pattern for TV)")
         } else {
-            println("[AUDIT] Focus moves across a large portion of the screen — elements are spread vertically")
+            println("${p}[AUDIT] Focus moves across a large portion of the screen — elements are spread vertically")
         }
 
         if (scrollDetected) {
-            println("[OK] Scrollable content detected — D-pad triggers scrolling as expected")
+            println("${p}[OK] Scrollable content detected — D-pad triggers scrolling as expected")
         } else if (yPositions.size > 10) {
             val allSimilar = yPositions.distinct().size <= 3
             if (allSimilar) {
-                println("[AUDIT] Focus stays at nearly the same Y position — content scrolls under fixed focus (good TV pattern)")
+                println("${p}[AUDIT] Focus stays at nearly the same Y position — content scrolls under fixed focus (good TV pattern)")
             } else {
-                println("[AUDIT] No clear scrolling pattern detected — content may fit on one screen")
+                println("${p}[AUDIT] No clear scrolling pattern detected — content may fit on one screen")
             }
         }
 
@@ -831,7 +947,7 @@ class DpadAnalysisTest {
         }
         val afterScrollUp = TestHelper.getFocusedBounds(device)
         if (afterScrollUp != null && afterScrollUp.centerY() < lastYBeforeUp - 50) {
-            println("[OK] Upward scroll navigation works — user can return to top")
+            println("${p}[OK] Upward scroll navigation works — user can return to top")
         }
     }
 
@@ -841,13 +957,13 @@ class DpadAnalysisTest {
 
     @Test
     fun analyze_rapidInputBehavior() {
-        println("[AUDIT] === Rapid Input Stress Analysis ===")
+        println("${p}[AUDIT] === Rapid Input Stress Analysis ===")
 
         TestHelper.launchApp(device)
         TestHelper.waitForIdle(device, 2000)
 
         // Phase 1: Rapid same-direction input
-        println("[AUDIT] Phase 1: Rapid DOWN x20 (50ms intervals)...")
+        println("${p}[AUDIT] Phase 1: Rapid DOWN x20 (50ms intervals)...")
         var focusLostCount = 0
         val startTime = System.currentTimeMillis()
 
@@ -859,15 +975,15 @@ class DpadAnalysisTest {
         device.waitForIdle(2000)
         val rapidDownMs = System.currentTimeMillis() - startTime
 
-        println("[AUDIT] Rapid DOWN completed in ${rapidDownMs}ms, focus lost $focusLostCount times")
+        println("${p}[AUDIT] Rapid DOWN completed in ${rapidDownMs}ms, focus lost $focusLostCount times")
         if (focusLostCount > 0) {
-            println("[WARN] Focus lost during rapid DOWN input — UI may not handle fast key repeat well")
+            println("${p}[WARN] Focus lost during rapid DOWN input — UI may not handle fast key repeat well")
         } else {
-            println("[OK] Focus maintained during rapid DOWN input")
+            println("${p}[OK] Focus maintained during rapid DOWN input")
         }
 
         // Phase 2: Rapid direction changes
-        println("[AUDIT] Phase 2: Rapid alternating directions x30 (50ms intervals)...")
+        println("${p}[AUDIT] Phase 2: Rapid alternating directions x30 (50ms intervals)...")
         focusLostCount = 0
         val altKeys = listOf(
             KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT,
@@ -883,19 +999,19 @@ class DpadAnalysisTest {
         device.waitForIdle(2000)
         val rapidAltMs = System.currentTimeMillis() - startTime2
 
-        println("[AUDIT] Rapid alternating completed in ${rapidAltMs}ms, focus lost $focusLostCount times")
+        println("${p}[AUDIT] Rapid alternating completed in ${rapidAltMs}ms, focus lost $focusLostCount times")
         if (focusLostCount > 0) {
-            println("[WARN] Focus lost during rapid direction changes")
+            println("${p}[WARN] Focus lost during rapid direction changes")
         } else {
-            println("[OK] Focus stable during rapid direction changes")
+            println("${p}[OK] Focus stable during rapid direction changes")
         }
 
         // Phase 3: Check app is still alive
         val isAlive = TestHelper.isAppInForeground(device)
         if (isAlive) {
-            println("[OK] App survived rapid input stress test without crashing")
+            println("${p}[OK] App survived rapid input stress test without crashing")
         } else {
-            println("[ISSUE] App crashed or lost foreground during rapid input stress test")
+            println("${p}[ISSUE] App crashed or lost foreground during rapid input stress test")
             TestHelper.launchApp(device)
             TestHelper.waitForIdle(device, 2000)
         }
@@ -904,11 +1020,11 @@ class DpadAnalysisTest {
         val recoveryStart = System.currentTimeMillis()
         TestHelper.pressDown(device, 300)
         val recoveryMs = System.currentTimeMillis() - recoveryStart
-        println("[AUDIT] Post-stress recovery response: ${recoveryMs}ms")
+        println("${p}[AUDIT] Post-stress recovery response: ${recoveryMs}ms")
         if (recoveryMs > 1000) {
-            println("[WARN] UI is sluggish after rapid input — possible input queue buildup or rendering lag")
+            println("${p}[WARN] UI is sluggish after rapid input — possible input queue buildup or rendering lag")
         } else {
-            println("[OK] UI recovers quickly after rapid input")
+            println("${p}[OK] UI recovers quickly after rapid input")
         }
     }
 
@@ -918,8 +1034,8 @@ class DpadAnalysisTest {
 
     @Test
     fun analyze_multiScreenNavigation() {
-        println("[AUDIT] === Multi-Screen Navigation Map ===")
-        println("[AUDIT] Exploring screens reachable from the main screen")
+        println("${p}[AUDIT] === Multi-Screen Navigation Map ===")
+        println("${p}[AUDIT] Exploring screens reachable from the main screen")
 
         TestHelper.launchApp(device)
         TestHelper.waitForIdle(device, 2000)
@@ -986,25 +1102,25 @@ class DpadAnalysisTest {
             }
         }
 
-        println("[AUDIT] Discovered ${screens.size} unique screen states:")
+        println("${p}[AUDIT] Discovered ${screens.size} unique screen states:")
         for (s in screens) {
             val focusTag = if (s.hasFocus) "focus OK" else "NO FOCUS"
-            println("[AUDIT]   ${s.name}: ${s.focusableCount} focusable elements, $focusTag (via: ${s.reachMethod})")
+            println("${p}[AUDIT]   ${s.name}: ${s.focusableCount} focusable elements, $focusTag (via: ${s.reachMethod})")
         }
 
         val noFocusScreens = screens.filter { !it.hasFocus }
         if (noFocusScreens.isNotEmpty()) {
-            println("[ISSUE] ${noFocusScreens.size} screen(s) have no initial focus:")
+            println("${p}[ISSUE] ${noFocusScreens.size} screen(s) have no initial focus:")
             for (s in noFocusScreens) {
-                println("[ISSUE]   ${s.name} (${s.reachMethod})")
+                println("${p}[ISSUE]   ${s.name} (${s.reachMethod})")
             }
         } else {
-            println("[OK] All discovered screens have initial focus set")
+            println("${p}[OK] All discovered screens have initial focus set")
         }
 
         val emptyScreens = screens.filter { it.focusableCount == 0 }
         if (emptyScreens.isNotEmpty()) {
-            println("[ISSUE] ${emptyScreens.size} screen(s) have zero focusable elements — D-pad users are stranded")
+            println("${p}[ISSUE] ${emptyScreens.size} screen(s) have zero focusable elements — D-pad users are stranded")
         }
     }
 }
